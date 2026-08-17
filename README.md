@@ -181,6 +181,16 @@ each one does not cover:
   item cap is only a second wall. `targets` and `ignore` are deliberately left
   unbounded — one resolves each entry once, the other becomes a Set, and neither
   multiplies against anything.
+- **That cap counts code units, not cost, so the real ceiling is a range.** A
+  full 100 × 64 list against the same 5,000 headings costs 14ms in ASCII, 20ms
+  in German, ~71ms in Greek or Cyrillic, 143ms in astral characters, and
+  **602ms** in U+0130 (Turkish dotted capital İ) — a ~40× spread, because V8
+  drops off its fast Latin1 lowercasing path above Latin1 and off even the ICU
+  path for U+0130's special-casing exception. Non-ASCII is **not** rejected: a
+  Greek or German heading word is a legitimate config and is most of the reason
+  to prefer a word list over a pattern. So the honest worst case a hostile
+  config can buy here is 602ms, not the 14ms an ASCII-only benchmark implies —
+  sub-second and linear, which is why the cap is where this stops.
 - **`dead.mjs` reads the repo into memory and stops at 256MB.** Past that it
   reports how many files went unscanned, and its `ABSENT` verdicts are incomplete
   by exactly that many files. Narrow `ignore` and re-run rather than reading the

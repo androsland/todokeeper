@@ -219,7 +219,11 @@ run reports before trusting its completed mass.
 lowercased once per word per heading, so 100 words of 64 characters is the
 ceiling on one half of a multiplication whose other half — how many headings the
 target file holds — nothing here bounds at all. A pathological `TODOS.md` is
-still slow to measure.
+still slow to measure. And the cap counts code units rather than cost: a full
+list of Turkish dotted capital İ runs ~40× slower than the same list in ASCII
+(602ms against 5,000 headings, versus 14ms). Non-ASCII stays allowed because
+Greek and German heading words are the point of a word list; sub-second is the
+ceiling, not the typical.
 
 **`dead.mjs` reads the repo into memory and stops at 256MB.** When it stops it
 says how many files it skipped, and `ABSENT` is then incomplete by that many

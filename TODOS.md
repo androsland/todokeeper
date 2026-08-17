@@ -104,6 +104,24 @@ run the three scripts against this repo and they should report something sane.
 
 ## Completed
 
+- **The cap counted code units, the docs quoted an ASCII benchmark, and the two
+  are ~40× apart.** `checkWordList` bounds `completedHeadings` at 100 × 64, but
+  `toLowerCase()` cost per unit is not uniform: at the identical cap against
+  5,000 headings, ASCII is 14ms, German 20ms, Greek and Cyrillic ~71ms, astral
+  143ms, and U+0130 602ms — V8 leaves its fast Latin1 path above Latin1 and
+  leaves even ICU for U+0130's special-casing exception. The cap held; the
+  README's justification did not, because it quoted only the ASCII figure and
+  read as though the ceiling were near it. Rejecting non-ASCII was considered
+  and refused — a Greek or German heading word is a legitimate config and most
+  of the reason to prefer a word list over a pattern — so the fix is the honest
+  number in all three artefacts. Closed alongside it: unknown-key rejection used
+  `k in DEFAULTS`, and `in` walks the prototype chain, so `__proto__`,
+  `toString`, `constructor`, `hasOwnProperty` and `valueOf` all read as known
+  keys and passed. Verified NOT prototype pollution (`JSON.parse` and spread
+  both make `__proto__` an own property; `({}).polluted` stays undefined) — but
+  a contract that holds for every key except five is not a contract. Now
+  `Object.hasOwn`. (security review, 2026-08-17)
+
 - **Removing the regex did not remove the cost — an unbounded word list hung a
   run for 8.7 seconds.** `isCompletedHeading` lowercases every entry of
   `completedHeadings` for every heading in every target file, so the cost is

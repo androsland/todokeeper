@@ -196,6 +196,17 @@ export function isEntryStart(line, styles) {
  * the STRING length is the whole cost, so the per-word cap is the half that
  * matters and the item cap is a second wall rather than the fix.
  *
+ * The cap counts UTF-16 code units, and cost per unit is not uniform — so the
+ * ceiling is a range, not a number. At the full 100 x 64, against the same
+ * 5,000 headings: ASCII 14ms, German 20ms, Greek and Cyrillic ~71ms, astral
+ * 143ms, and U+0130 (Turkish dotted capital I) 602ms, a ~40x spread, because
+ * V8 leaves its fast Latin1 lowercasing path for anything above it and leaves
+ * even the ICU path for U+0130's SpecialCasing exception. Non-ASCII is NOT
+ * rejected: a Greek or German heading word is a legitimate config and the whole
+ * point of a word list over a pattern, and the worst case a hostile config can
+ * buy is still sub-second and still linear. The honest ceiling is 602ms, not
+ * the 14ms an ASCII-only benchmark would suggest.
+ *
  * `targets` and `ignore` are deliberately left unbounded: one resolves each
  * entry once and the other becomes a Set, so a long list costs time in
  * proportion to what the author wrote and multiplies against nothing.
@@ -245,7 +256,14 @@ export function loadConfig(root) {
   // carrying `entryPattern` — the regex knob this tool deliberately no longer
   // has — would be accepted in silence and quietly run on defaults, which reads
   // as "my pattern is in effect" and is the worst of the three outcomes.
-  const unknown = Object.keys(parsed).filter((k) => !(k in DEFAULTS));
+  //
+  // `Object.hasOwn`, not `k in DEFAULTS`: `in` walks the prototype chain, so
+  // `__proto__`, `toString`, `constructor`, `hasOwnProperty` and `valueOf` all
+  // read as known keys and slipped through the check that exists to catch
+  // exactly that. It was not prototype pollution — `JSON.parse` and object
+  // spread both make `__proto__` an ordinary own property — but "unknown keys
+  // are rejected" has to be true for every key or it is not a contract.
+  const unknown = Object.keys(parsed).filter((k) => !Object.hasOwn(DEFAULTS, k));
   if (unknown.length) {
     throw new Error(
       `.todokeeper.json: unknown key(s) ${unknown.map((k) => `\`${k}\``).join(', ')}. `
