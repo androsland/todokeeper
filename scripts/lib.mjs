@@ -63,6 +63,119 @@ export const DEFAULTS = {
 /* ----------------------------------------------------------- untrusted input */
 
 /**
+ * Control characters that never belong in text this tool prints, stripped at
+ * every boundary where repo-controlled bytes reach a terminal.
+ *
+ * The three scripts print headings, entry leads, matched source lines and git
+ * commit SUBJECTS — all of them bytes someone else wrote. An ESC in any of
+ * them is executed by the terminal, not displayed: cursor movement and erase
+ * sequences let a hostile repo rewrite this tool's own output, which for an
+ * auditing tool is the whole ballgame — a SUSPECT finding can be redrawn to
+ * look clean. On terminals honouring OSC 52 the same primitive reaches the
+ * operator's clipboard.
+ *
+ * The commit-subject path is the one that matters most, and it is wider than it
+ * looks: it needs no edit to the deferred-work file at all. A contributor
+ * commits an ordinary change to any file the file happens to reference, puts
+ * the payload in the commit SUBJECT, and `stale.mjs` prints it.
+ *
+ * Verified before and after: an OSC-0 sequence planted in a heading, in a
+ * backticked referent and in a commit subject reached stdout as raw 0x1B from
+ * all three scripts. `--json` was never affected — `JSON.stringify` escapes
+ * control bytes to `\uXXXX` on its own — so this guards the human-readable
+ * path only.
+ *
+ * This strips CONTROL characters, never a character set. Tab, newline and
+ * carriage return survive because they are layout; C1 (U+0080-U+009F) is
+ * included because some terminals honour it as CSI/OSC and no real text uses
+ * it. Greek, German and emoji are untouched, for the same reason non-ASCII is
+ * allowed in the word lists: this tool is bilingual by intent, and a charset
+ * restriction dressed up as a safety fix would break legitimate repos.
+ */
+const CONTROL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
+
+export function safe(value) {
+  return typeof value === 'string' ? value.replace(CONTROL_CHARS, '') : value;
+}
+
+/**
+ * Bytes above which a file is not read at all.
+ *
+ * `readFileSync(path, 'utf8')` has no ceiling of its own below V8's 537MB
+ * string limit, and the allocation fails long before that: measured, a 53.7MB
+ * target parses correctly in 1.54s but holds 490MB resident — roughly 9x the
+ * file — so a target a few hundred MB wide exits with `FATAL ERROR: Reached
+ * heap limit` and a native stack. That is the same shape as the unvalidated
+ * `splitThresholdBytes`: an untrusted repo turning a bad input into a crash
+ * carrying no line anyone can act on.
+ *
+ * `dead.mjs` already caps every OTHER file it reads (`FILE_CAP`, `TOTAL_CAP`)
+ * and then read its own target uncapped a few lines later. This closes that.
+ *
+ * 64MB is chosen against measurement, not taste: the largest real deferred-work
+ * file seen across the repos this was built on is 259KB, so the cap sits ~247x
+ * above the honest ceiling, and just above a 53.7MB case proven to complete.
+ *
+ * NON-GOALS, stated because a cap reads as coverage:
+ *  - It bounds ONE file, never the set. `targets` may name many, and N files
+ *    each just under the cap still sum past memory. Nothing here totals them
+ *    the way `dead.mjs` totals its repo-wide walk.
+ *  - A byte cap is not a memory cap. The ~9x amplification is a property of
+ *    this V8 on this machine, not a constant, so the same 64MB buys a different
+ *    ceiling elsewhere.
+ *  - It does not bound processing. A file well under the cap can still hold a
+ *    million headings; see the standing entry in TODOS.md.
+ */
+export const TARGET_CAP = 64_000_000;
+
+/**
+ * The same ceiling for the small JSON files this tool reads whole:
+ * `.todokeeper.json`, `package.json`, `composer.json`. All three hold a handful
+ * of keys, all three ship inside the scanned repo, and all three were read with
+ * no size check at all.
+ *
+ * A `try/catch` is not a guard here. `declaredDependencies` wraps its read in
+ * one, and an out-of-memory FATAL is not a catchable exception — it ends the
+ * process — so the only place to stop this is before the read. Four orders of
+ * magnitude above any real manifest.
+ */
+export const MANIFEST_CAP = 1_000_000;
+
+/**
+ * Read a whole file this tool does not control, refusing one large enough to
+ * end the process instead of the read.
+ *
+ * Skip-and-announce rather than throw, matching `dead.mjs`'s repo-walk: one
+ * oversized file in a `todos/` directory must not take the other four with it.
+ * The caller drops a null. Silence here would be the worst outcome — a skipped
+ * target reported as a measured one is a completed-mass number that is simply
+ * wrong.
+ */
+export function readTarget(path, label = path) {
+  let size;
+  try {
+    ({ size } = statSync(path));
+  } catch (err) {
+    process.stderr.write(`todokeeper: cannot stat \`${safe(label)}\` — ${safe(err.message)}\n`);
+    return null;
+  }
+  if (size > TARGET_CAP) {
+    process.stderr.write(
+      `todokeeper: skipping \`${safe(label)}\` — ${(size / 1e6).toFixed(1)}MB is over the `
+      + `${TARGET_CAP / 1e6}MB per-file cap. Reading it costs several times its size in memory `
+      + 'and would end the process rather than the read. Anything below is missing this file.\n',
+    );
+    return null;
+  }
+  try {
+    return readFileSync(path, 'utf8');
+  } catch (err) {
+    process.stderr.write(`todokeeper: cannot read \`${safe(label)}\` — ${safe(err.message)}\n`);
+    return null;
+  }
+}
+
+/**
  * Every path this tool reads must resolve to somewhere inside the repo.
  *
  * `join(root, target)` is not containment. `..` inside a target walks out, and
@@ -243,11 +356,25 @@ export function loadConfig(root) {
   if (!contained(root, path)) {
     throw new Error('.todokeeper.json resolves outside the repository; refusing to read it');
   }
+  // The word-list caps run AFTER the parse, so they cannot bound the parse
+  // itself. A multi-megabyte `.todokeeper.json` is read and deserialised in
+  // full before any of them is consulted — the 4.8MB config that proved the
+  // word-list DoS was itself never the memory problem, but nothing stopped a
+  // larger one from being.
+  const { size } = statSync(path);
+  if (size > MANIFEST_CAP) {
+    throw new Error(
+      `.todokeeper.json is ${(size / 1e6).toFixed(1)}MB; the limit is ${MANIFEST_CAP / 1e6}MB. `
+      + 'This file holds a handful of keys, not data.',
+    );
+  }
   let parsed;
   try {
     parsed = JSON.parse(readFileSync(path, 'utf8'));
   } catch (err) {
-    throw new Error(`.todokeeper.json is not valid JSON: ${err.message}`);
+    // The parse error quotes the offending bytes, so this message carries
+    // config-controlled text into a terminal.
+    throw new Error(`.todokeeper.json is not valid JSON: ${safe(err.message)}`);
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('.todokeeper.json must contain a JSON object');
@@ -266,7 +393,7 @@ export function loadConfig(root) {
   const unknown = Object.keys(parsed).filter((k) => !Object.hasOwn(DEFAULTS, k));
   if (unknown.length) {
     throw new Error(
-      `.todokeeper.json: unknown key(s) ${unknown.map((k) => `\`${k}\``).join(', ')}. `
+      `.todokeeper.json: unknown key(s) ${unknown.map((k) => `\`${safe(k)}\``).join(', ')}. `
       + `Known keys: ${Object.keys(DEFAULTS).join(', ')}.`
       + (unknown.some((k) => k === 'entryPattern' || k === 'completedHeadingPattern')
         ? ' Regex config was removed on purpose — use `entryStyles` and `completedHeadings`.'
@@ -315,7 +442,10 @@ export function loadConfigOrExit(root) {
   try {
     return loadConfig(root);
   } catch (err) {
-    process.stderr.write(`todokeeper: ${err.message}\n`);
+    // Every message reaching here has passed through config-controlled text at
+    // least once — a key name, a style name, a parse error quoting the bytes.
+    // This is the single choke point for all of them.
+    process.stderr.write(`todokeeper: ${safe(err.message)}\n`);
     process.exit(2);
   }
 }
@@ -348,7 +478,7 @@ export function resolveTargets(root, config) {
       // A target that exists but resolves outside was rejected, not absent, and
       // saying nothing would report an escaped file as a clean repo.
       if (existsSync(joined)) {
-        process.stderr.write(`todokeeper: skipping \`${target}\` — it resolves outside the repository\n`);
+        process.stderr.write(`todokeeper: skipping \`${safe(target)}\` — it resolves outside the repository\n`);
       }
       continue;
     }
@@ -359,7 +489,7 @@ export function resolveTargets(root, config) {
         // symlink pointing out, so each entry is checked on its own.
         const child = contained(root, join(abs, name));
         if (child) found.push(child);
-        else process.stderr.write(`todokeeper: skipping \`${target}/${name}\` — it resolves outside the repository\n`);
+        else process.stderr.write(`todokeeper: skipping \`${safe(target)}/${safe(name)}\` — it resolves outside the repository\n`);
       }
     } else {
       found.push(abs);
@@ -530,7 +660,11 @@ function declaredDependencies(root) {
   ];
   for (const [file, fields] of manifests) {
     try {
-      const json = JSON.parse(readFileSync(join(root, file), 'utf8'));
+      const abs = join(root, file);
+      // Before the read, not inside the catch: an OOM is a FATAL, not an
+      // exception, so this `try` cannot see it.
+      if (statSync(abs).size > MANIFEST_CAP) continue;
+      const json = JSON.parse(readFileSync(abs, 'utf8'));
       for (const field of fields) {
         for (const name of Object.keys(json[field] ?? {})) names.add(name);
       }

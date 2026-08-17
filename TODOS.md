@@ -85,14 +85,30 @@ run the three scripts against this repo and they should report something sane.
   without reopening the silent one. Nobody has asked for it yet.
   (security review, 2026-08-17)
 
-- **The list caps bound the config; nothing bounds the target file.**
-  `completedHeadings` is capped at 100 words of 64 characters, but its cost is
-  `headings × Σ(word lengths)` and the heading count is read from the file being
-  measured, which has no cap of any kind. A `TODOS.md` with a million headings is
-  still slow, and unlike the config half it is not obviously attacker-controlled —
-  a repo's own file is a weaker threat than a config a contributor can add in a
-  PR, which is why only one half was closed. A cap on target size would need a
-  skip-and-announce path like `dead.mjs`'s, not a hard refusal.
+- **The target cap bounds bytes, not work.** `TARGET_CAP` stops a file large
+  enough to end the process, but `isCompletedHeading` costs
+  `headings × Σ(word lengths)` and nothing bounds the heading count. Measured:
+  a 489KB file of 50,000 headings against a full 100 × 64 list of U+0130 takes
+  **7.12s and peaks at 119MB** — 130× under the size cap. Deliberately left:
+  the config half of that multiplication is capped, the file half is a repo's
+  own content and a weaker threat than a config a contributor adds in a PR.
+  (security review, 2026-08-17, narrowed from a wider entry the same day)
+
+- **`TARGET_CAP` bounds one file, never the set.** `targets` may name a
+  directory of five files, each 63MB, and nothing totals them the way
+  `dead.mjs`'s `TOTAL_CAP` totals its repo-wide walk. No aggregate budget exists
+  on the target side. Not built because no real deferred-work directory is
+  within three orders of magnitude of this, and an aggregate cap needs a rule
+  for WHICH file to drop — a choice with no obviously right answer.
+  (security review, 2026-08-17)
+
+- **An oversize `package.json` degrades the dependency filter silently.**
+  `declaredDependencies` now skips a manifest over `MANIFEST_CAP` before
+  reading it, and says nothing — it shares the existing catch-all path where a
+  missing or unparseable manifest simply means the filter does not apply. The
+  cost is the documented one (a few extra entries in a bucket a human reads),
+  but unlike the target skips it is not announced, so a 2MB `package.json`
+  looks like a repo with no dependencies.
   (security review, 2026-08-17)
 
 - **The 256MB read budget in `dead.mjs` is a guess, not a measurement.** It was
@@ -103,6 +119,37 @@ run the three scripts against this repo and they should report something sane.
   (2026-08-17)
 
 ## Completed
+
+- **An auditing tool printed repo-controlled escape sequences straight to the
+  terminal, and read its own target with no cap at all.** Two findings, one
+  fix each. (1) Headings, entry leads, matched source lines and git commit
+  SUBJECTS all reached `console.log` raw: an OSC-0 sequence planted in each
+  arrived as 0x1B from all three scripts, verified. For an auditing tool that
+  is worse than for an ordinary CLI — cursor and erase sequences let a hostile
+  repo redraw a `SUSPECT` finding to look clean, and OSC 52 reaches the
+  operator's clipboard. The commit-subject path needs no edit to the
+  deferred-work file at all: a contributor commits an ordinary change to any
+  file the file happens to reference and puts the payload in the subject.
+  `safe()` now strips C0 and C1 at every human-readable print sink; `--json`
+  was never affected, because `JSON.stringify` escapes control bytes on its
+  own. Controls, never a charset — Greek, German and emoji are untouched, for
+  the same reason non-ASCII stays legal in the word lists. (2) `dead.mjs`
+  capped every file in its repo-wide walk and then read its own target
+  uncapped twenty lines later; `measure.mjs` and `stale.mjs` did the same.
+  Measured, not argued: a 53.7MB target parses correctly in 1.54s but holds
+  490MB resident, ~9× the file, and under `--max-old-space-size=128` it exits
+  `FATAL ERROR: Reached heap limit` with a native stack — the same
+  crash-with-no-actionable-line already rejected for `splitThresholdBytes`.
+  `TARGET_CAP` is 64MB, ~247× the largest real deferred-work file seen (259KB)
+  and just above a case proven to complete, and it skips-and-announces per
+  file like `dead.mjs` rather than refusing the run. The skip is on stdout as
+  well as stderr, because it changes the total, the completed mass and the
+  threshold verdict. `MANIFEST_CAP` (1MB) closes the same hole in
+  `.todokeeper.json`, `package.json` and `composer.json` — a `try/catch`
+  cannot catch an OOM, so the check is before the read. Verified: 0 raw ESC
+  bytes from all three scripts on all three PoC repos with the SUSPECT path
+  still firing, and every verdict, status and number byte-identical across
+  both test repos. (security review, 2026-08-17)
 
 - **The cap counted code units, the docs quoted an ASCII benchmark, and the two
   are ~40× apart.** `checkWordList` bounds `completedHeadings` at 100 × 64, but

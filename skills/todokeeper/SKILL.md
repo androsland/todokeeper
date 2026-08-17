@@ -218,12 +218,31 @@ run reports before trusting its completed mass.
 **The word-list caps bound the config, not the file.** `completedHeadings` is
 lowercased once per word per heading, so 100 words of 64 characters is the
 ceiling on one half of a multiplication whose other half — how many headings the
-target file holds — nothing here bounds at all. A pathological `TODOS.md` is
-still slow to measure. And the cap counts code units rather than cost: a full
-list of Turkish dotted capital İ runs ~40× slower than the same list in ASCII
-(602ms against 5,000 headings, versus 14ms). Non-ASCII stays allowed because
-Greek and German heading words are the point of a word list; sub-second is the
-ceiling, not the typical.
+target file holds — nothing here bounds at all. Measured: a 489KB file of 50,000
+headings against a full list of U+0130 takes 7.1 seconds, 130× under the 64MB
+size cap and still slow. And the cap counts
+code units rather than cost: a full list of Turkish dotted capital İ runs ~40×
+slower than the same list in ASCII (602ms against 5,000 headings, versus 14ms).
+Non-ASCII stays allowed because Greek and German heading words are the point of
+a word list; sub-second is the ceiling, not the typical.
+
+**A target over 64MB is skipped, and the skip changes the numbers.** Reading a
+file this tool does not control costs several times its size in memory, so an
+oversized one would end the process rather than the read. When a target is
+skipped it is named on stderr and again in the report, and every figure —
+total size, completed mass, the threshold verdict — is incomplete by that file.
+Do not read a report with an `UNREAD` line as a measurement. The cap bounds one
+file, not the set: several targets each just under it still sum past memory.
+
+**Control characters are stripped from the human-readable reports, so what you
+read is not byte-identical to the repo.** Headings, entry leads, source lines
+and commit subjects are all written by whoever can commit, and an ESC in any of
+them would be executed by your terminal rather than shown — for a tool that
+exists to print findings, that means a hostile repo could redraw a `SUSPECT`
+line to look clean. C0 and C1 are removed at every print sink; tab, newline and
+carriage return survive. Only control characters go: Greek, German and emoji
+are untouched. Use `--json` if you need the exact bytes — it escapes them
+rather than stripping them.
 
 **`dead.mjs` reads the repo into memory and stops at 256MB.** When it stops it
 says how many files it skipped, and `ABSENT` is then incomplete by that many

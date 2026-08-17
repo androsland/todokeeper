@@ -150,9 +150,10 @@ dead referent reported as alive.
 
 ### Limits of the safety checks
 
-`.todokeeper.json` is a file in the repo being scanned, so it is treated as
-untrusted input rather than as your own configuration. Three guards, and what
-each one does not cover:
+Everything todokeeper reads — the config, the deferred-work file, the source it
+greps, the commit log it dates entries from — is written by whoever can commit
+to the repo being scanned, not by you. It is treated as untrusted input
+throughout. Each guard, and what it does not cover:
 
 - **Nothing outside the repository is read.** A `targets` entry that resolves
   out of the tree — through `..` or through a symlink — is skipped, with the
@@ -191,19 +192,51 @@ each one does not cover:
   to prefer a word list over a pattern. So the honest worst case a hostile
   config can buy here is 602ms, not the 14ms an ASCII-only benchmark implies —
   sub-second and linear, which is why the cap is where this stops.
+- **Control characters are stripped from everything printed for a human to
+  read.** The reports quote headings, entry leads, matched source lines and git
+  commit **subjects** — all of them bytes someone else wrote — and an ESC in
+  any of them is executed by your terminal rather than displayed. For a tool
+  whose whole output is findings that matters more than usual: cursor and erase
+  sequences let a repo redraw a `SUSPECT` line to look clean, and on terminals
+  honouring OSC 52 the same primitive writes to your clipboard. The
+  commit-subject path needs no edit to the deferred-work file at all — an
+  ordinary commit to any file it happens to reference, with the payload in the
+  subject. So C0 and C1 are removed at every print sink; tab, newline and
+  carriage return survive as layout. **This strips control characters, never a
+  character set** — Greek, German and emoji pass through untouched, for the
+  same reason non-ASCII is legal in the word lists. `--json` never needed this:
+  `JSON.stringify` escapes control bytes to `\uXXXX` on its own.
+- **A target file over 64MB is skipped rather than read.** `readFileSync` has
+  no ceiling below V8's 537MB string limit and the allocation fails long before
+  it: measured, a 53.7MB file parses correctly in 1.54s while holding **490MB
+  resident** — about 9× the file — so a few hundred MB exits with
+  `FATAL ERROR: Reached heap limit` and a native stack, which is a crash rather
+  than an error message. The cap sits ~247× above the largest real
+  deferred-work file seen (259KB). A skip is announced on stderr **and** in the
+  report itself, because it changes the total, the completed mass and the
+  threshold verdict — a skipped file counted as measured produces a number that
+  is simply wrong. `.todokeeper.json`, `package.json` and `composer.json` get
+  the same treatment at 1MB. **What it does not cover:** it bounds one file,
+  never the set — five 63MB targets still sum past memory, and nothing totals
+  them. And a byte cap is not a memory cap; the ~9× amplification is a property
+  of one V8 on one machine.
 - **`dead.mjs` reads the repo into memory and stops at 256MB.** Past that it
   reports how many files went unscanned, and its `ABSENT` verdicts are incomplete
   by exactly that many files. Narrow `ignore` and re-run rather than reading the
   truncated result.
 
-Three things these guards do **not** cover. The path check resolves and then
+Four things these guards do **not** cover. The path check resolves and then
 reads, so a symlink swapped in between the two calls wins the race — an attacker
 who can do that already has write access to the same tree. A heading that
 begins with a completed word but means something else (`## Done criteria`) is
-read as an archive; the anchor stops `## Not completed`, not this. And the list
-caps bound the **config**, not the file being measured: a repo whose `TODOS.md`
-holds a million headings still pays for every one of them, and nothing here
-caps a target file's size or heading count.
+read as an archive; the anchor stops `## Not completed`, not this. The size cap
+bounds bytes, not work: measured, a 489KB file of 50,000 headings against a full
+100 × 64 word list of U+0130 takes **7.1 seconds** — 130× under the size cap and
+still slow, because the cost is `headings × Σ(word lengths)` and only the config
+half of that multiplication is bounded. And an oversize
+`package.json` is skipped **silently** — the dependency filter simply stops
+applying, which costs a few extra entries in a bucket a human reads, but unlike
+the target skips nothing says it happened.
 
 ## Splitting and archiving
 

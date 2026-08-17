@@ -28,6 +28,7 @@ import { readFileSync, statSync } from 'node:fs';
 import {
   loadConfigOrExit, repoRoot, resolveTargets, sections, entries,
   classifyReferent, buildFileIndex, walkFiles, isText, rel, isCompletedHeading,
+  readTarget, safe,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -39,7 +40,7 @@ const config = loadConfigOrExit(root);
 const targets = resolveTargets(root, config);
 
 if (targets.length === 0) {
-  console.error(`todokeeper: no deferred-work file found. Looked for: ${config.targets.join(', ')}`);
+  console.error(`todokeeper: no deferred-work file found. Looked for: ${config.targets.map(safe).join(', ')}`);
   process.exit(2);
 }
 
@@ -175,9 +176,15 @@ if (unread > 0 || skippedForSize > 0) {
 const index = buildFileIndex(root, config.ignore);
 const seen = new Map();
 
+const unreadTargets = [];
+
 for (const abs of targets) {
   const file = rel(root, abs);
-  const text = readFileSync(abs, 'utf8');
+  // Capped like every other file this script reads. Skipping one target still
+  // reports the referents named by the others; the skip is announced below,
+  // because a referent nobody collected cannot be ABSENT — it was never asked.
+  const text = readTarget(abs, file);
+  if (text === null) { unreadTargets.push(file); continue; }
   let completedDepth = null;
 
   for (const sec of sections(text)) {
@@ -246,7 +253,7 @@ for (const ref of seen.values()) {
 }
 
 if (asJson) {
-  console.log(JSON.stringify({ root, referents: report }, null, 2));
+  console.log(JSON.stringify({ root, referents: report, unreadTargets }, null, 2));
   process.exit(0);
 }
 
@@ -256,6 +263,11 @@ for (const r of report) grouped[r.verdict].push(r);
 
 console.log(`todokeeper dead — ${root}`);
 console.log(`${report.length} distinct referents, scanned across ${contents.size} files\n`);
+
+if (unreadTargets.length) {
+  console.log(`UNREAD TARGET (${unreadTargets.length}): ${unreadTargets.map(safe).join(', ')}`);
+  console.log('No referent from these files was collected — see stderr for why.\n');
+}
 
 const explain = {
   ABSENT: 'no occurrence anywhere in the repo — the entry names something gone',
@@ -274,9 +286,9 @@ for (const key of order) {
   console.log(`${key} (${list.length}) — ${explain[key]}`);
   if (quiet) { console.log(''); continue; }
   for (const r of list) {
-    console.log(`  \`${r.raw}\``);
-    console.log(`    named by: ${r.from.map((f) => `${f.file} :: ${f.lead.slice(0, 56)}`).join(' | ')}`);
-    for (const h of r.hits) console.log(`    ${h.path}:${h.line}  ${h.text}`);
+    console.log(`  \`${safe(r.raw)}\``);
+    console.log(`    named by: ${r.from.map((f) => `${safe(f.file)} :: ${safe(f.lead.slice(0, 56))}`).join(' | ')}`);
+    for (const h of r.hits) console.log(`    ${safe(h.path)}:${h.line}  ${safe(h.text)}`);
   }
   console.log('');
 }

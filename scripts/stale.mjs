@@ -20,11 +20,11 @@
  *   node scripts/stale.mjs [--json] [--min-days N] [--root <dir>]
  */
 
-import { readFileSync } from 'node:fs';
 import {
   loadConfigOrExit, repoRoot, resolveTargets, sections, entries,
   lastCommitTouching, lastCommitChangingPhrase, classifyReferent,
   buildFileIndex, rel, daysBetween, isCompletedHeading,
+  readTarget, safe,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -38,7 +38,7 @@ const config = loadConfigOrExit(root);
 const targets = resolveTargets(root, config);
 
 if (targets.length === 0) {
-  console.error(`todokeeper: no deferred-work file found. Looked for: ${config.targets.join(', ')}`);
+  console.error(`todokeeper: no deferred-work file found. Looked for: ${config.targets.map(safe).join(', ')}`);
   process.exit(2);
 }
 
@@ -51,10 +51,15 @@ const phraseCache = new Map();
 const pathCache = new Map();
 
 const results = [];
+const unreadTargets = [];
 
 for (const abs of targets) {
   const file = rel(root, abs);
-  const text = readFileSync(abs, 'utf8');
+  // An unread target contributes no entries, so its live work is absent from
+  // every bucket below rather than landing in a wrong one. Announced, because
+  // "0 suspect" from a file nobody read reads exactly like a clean sweep.
+  const text = readTarget(abs, file);
+  if (text === null) { unreadTargets.push(file); continue; }
   let completedDepth = null;
 
   for (const sec of sections(text)) {
@@ -131,7 +136,9 @@ for (const abs of targets) {
 }
 
 if (asJson) {
-  console.log(JSON.stringify({ root, minDays, entries: results }, null, 2));
+  console.log(JSON.stringify({
+    root, minDays, entries: results, unreadTargets,
+  }, null, 2));
   process.exit(0);
 }
 
@@ -148,14 +155,19 @@ const short = (s, n = 72) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const day = (iso) => (iso ? iso.slice(0, 10) : '—');
 
 console.log(`todokeeper stale — ${root}`);
-console.log(`${results.length} live entries across ${targets.length} file(s)\n`);
+console.log(`${results.length} live entries across ${targets.length - unreadTargets.length} file(s)\n`);
+
+if (unreadTargets.length) {
+  console.log(`UNREAD TARGET (${unreadTargets.length}): ${unreadTargets.map(safe).join(', ')}`);
+  console.log('No entry from these files reached any bucket below — see stderr for why.\n');
+}
 
 if (buckets['referent-missing'].length) {
   console.log(`REFERENT MISSING (${buckets['referent-missing'].length}) — the entry names a path that no longer exists`);
   for (const r of buckets['referent-missing']) {
     const gone = r.referents.filter((x) => x.status === 'missing').map((x) => x.raw);
-    console.log(`  ${r.file} :: ${short(r.lead)}`);
-    console.log(`    gone: ${gone.join(', ')}`);
+    console.log(`  ${safe(r.file)} :: ${safe(short(r.lead))}`);
+    console.log(`    gone: ${gone.map(safe).join(', ')}`);
   }
   console.log('');
 }
@@ -163,9 +175,9 @@ if (buckets['referent-missing'].length) {
 if (buckets.suspect.length) {
   console.log(`SUSPECT (${buckets.suspect.length}) — referents changed AFTER the entry last did`);
   for (const r of [...buckets.suspect].sort((a, b) => b.gapDays - a.gapDays)) {
-    console.log(`  ${r.gapDays}d  ${r.file} :: ${short(r.lead)}`);
+    console.log(`  ${r.gapDays}d  ${safe(r.file)} :: ${safe(short(r.lead))}`);
     console.log(`      entry last changed ${day(r.entryCommit?.date)}  (${r.entryCommit?.hash.slice(0, 8) ?? '—'})`);
-    console.log(`      ${r.newestReferent.path} changed ${day(r.newestReferent.commit.date)}  (${r.newestReferent.commit.hash.slice(0, 8)}) ${short(r.newestReferent.commit.subject, 48)}`);
+    console.log(`      ${safe(r.newestReferent.path)} changed ${day(r.newestReferent.commit.date)}  (${r.newestReferent.commit.hash.slice(0, 8)}) ${safe(short(r.newestReferent.commit.subject, 48))}`);
   }
   console.log('');
 }

@@ -19,9 +19,9 @@
  *   node scripts/measure.mjs [--json] [--root <dir>]
  */
 
-import { readFileSync } from 'node:fs';
 import {
   loadConfigOrExit, repoRoot, resolveTargets, sections, entries, rel, isCompletedHeading,
+  readTarget, safe,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -33,16 +33,23 @@ const config = loadConfigOrExit(root);
 const targets = resolveTargets(root, config);
 
 if (targets.length === 0) {
-  const msg = `todokeeper: no deferred-work file found. Looked for: ${config.targets.join(', ')}`;
+  const msg = `todokeeper: no deferred-work file found. Looked for: ${config.targets.map(safe).join(', ')}`;
   if (asJson) console.log(JSON.stringify({ error: msg, targets: config.targets }, null, 2));
   else console.error(msg);
   process.exit(2);
 }
 
 const files = [];
+// A skipped target is the one thing this script must not report silently: every
+// number below is a sum or a percentage over the files actually read, so a
+// target dropped for size changes the total, the completed mass AND the
+// threshold verdict. stderr alone would leave a wrong number on stdout with
+// nothing beside it saying so.
+const skipped = [];
 
 for (const abs of targets) {
-  const text = readFileSync(abs, 'utf8');
+  const text = readTarget(abs, rel(root, abs));
+  if (text === null) { skipped.push(rel(root, abs)); continue; }
   const bytes = Buffer.byteLength(text, 'utf8');
   const secs = sections(text);
 
@@ -117,6 +124,9 @@ const verdict = {
   // to do about it depends on whether the mass is archive or live work, and
   // that is a judgement this script refuses to make.
   crossed: over.length > 0,
+  // Named, not counted: every figure in this object is incomplete by exactly
+  // these files.
+  skippedTargets: skipped,
 };
 
 if (asJson) {
@@ -130,8 +140,14 @@ const pad = (s, n) => String(s).padEnd(n);
 console.log(`todokeeper measure — ${root}`);
 console.log(`config: ${config._source}\n`);
 
+if (skipped.length) {
+  console.log(`UNREAD (${skipped.length}): ${skipped.map(safe).join(', ')}`);
+  console.log('Every number below excludes these files — see stderr for why. Sizes,');
+  console.log('completed mass and the threshold verdict are all incomplete by that much.\n');
+}
+
 for (const f of files) {
-  console.log(`${f.path}`);
+  console.log(`${safe(f.path)}`);
   console.log(`  size            ${kb(f.bytes)} (${f.bytes.toLocaleString()} B, ${f.lines} lines)`);
   console.log(`  completed mass  ${kb(f.completedBytes)} (${f.completedBytes.toLocaleString()} B, ${f.completedPercent}% of file, ${f.completedEntries} entries)`);
   console.log(`  live entries    ${f.liveEntries}`);
@@ -142,7 +158,7 @@ for (const f of files) {
   const biggest = [...f.sections].sort((a, b) => b.bytes - a.bytes).slice(0, 5);
   console.log('  largest sections:');
   for (const s of biggest) {
-    console.log(`    ${pad(kb(s.bytes), 8)} ${pad(`${s.entries}e`, 5)} ${s.completed ? '[completed] ' : ''}${'#'.repeat(Math.max(s.depth, 1))} ${s.heading}`);
+    console.log(`    ${pad(kb(s.bytes), 8)} ${pad(`${s.entries}e`, 5)} ${s.completed ? '[completed] ' : ''}${'#'.repeat(Math.max(s.depth, 1))} ${safe(s.heading)}`);
   }
   console.log('');
 }
@@ -152,7 +168,7 @@ if (files.length > 1) {
 }
 
 if (verdict.crossed) {
-  console.log(`OVER THRESHOLD (${kb(config.splitThresholdBytes)} / ${config.splitThresholdBytes.toLocaleString()} B): ${verdict.filesOverThreshold.join(', ')}`);
+  console.log(`OVER THRESHOLD (${kb(config.splitThresholdBytes)} / ${config.splitThresholdBytes.toLocaleString()} B): ${verdict.filesOverThreshold.map(safe).join(', ')}`);
   console.log('A split is relief, not a fix — the open half routinely stays over the threshold too.');
   console.log('Read the completed mass above before deciding: splitting a file whose archive is a');
   console.log('rounding error moves almost nothing and makes a stale section look maintained.');
