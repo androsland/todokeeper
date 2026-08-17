@@ -39,12 +39,14 @@ run the three scripts against this repo and they should report something sane.
 
 ## Coverage
 
-- **`entryPattern` is markdown-bullet shaped.** A deferred-work file written as a
-  table, a checklist inside a table cell, or a numbered list is not parsed as
-  entries at all — it will report 0 entries per section while still measuring
-  bytes correctly. No test repo used those shapes, so this is untested rather
-  than known-broken.
-  (2026-08-16)
+- **`entryStyles` names three shapes and a repo outside them cannot be
+  configured into working.** A deferred-work file written as a table, or as a
+  checklist inside a table cell, reports 0 entries per section while still
+  measuring bytes correctly. Since config no longer takes a regex, the fix for a
+  fourth shape is a new entry in `ENTRY_STYLES`, not a setting — deliberate, but
+  it means every new shape is a release. `numbered` and `bold-lead` were added
+  when the regex went away and are exercised only by hand.
+  (2026-08-16, revised 2026-08-17)
 
 - **Nothing tests the scripts.** They have been run against five real repos and
   their output read by hand, which caught seven classes of false positive, but
@@ -60,16 +62,21 @@ run the three scripts against this repo and they should report something sane.
 
 ## Untrusted input
 
-- **`safeRegExp` closes one ReDoS shape, not the class.** It rejects an
-  unbounded quantifier wrapping a group that repeats or alternates, which is the
-  demonstrated hang. Overlapping top-level alternation (`^(a|ab)*$`), a blowup
-  spread across sibling groups (`\s*\s*x`), and backreference-driven cases all
-  still compile and can still hang a run with no way to interrupt it. The real
-  fix is a linear-time engine (RE2 via a native dependency) or dropping
-  arbitrary patterns from config in favour of named options — both are larger
-  than the problem is today. Revisit if todokeeper is ever run over repos the
-  operator did not choose.
-  (security review, 2026-08-17)
+- **A heading that opens with a completed word is read as an archive.**
+  `## Done criteria` counts as completed and its entries drop out of every
+  report. Anchoring keeps `## Not completed` out but cannot keep this out, and
+  the retired regex behaved identically, so it is a standing limit rather than a
+  regression. A fix needs a negative list or a second word check; neither has
+  been designed, and the error understates live work rather than hiding it.
+  (2026-08-17)
+
+- **`isEntryStart` and `isCompletedHeading` are covered by a throwaway script,
+  not a test.** 26 cases were run by hand against both, including a parity check
+  against the regex they replaced across 15 headings. Nothing in the repo
+  re-runs them, so the next edit to either has no net. Folds into the "nothing
+  tests the scripts" entry above; noted separately because these two are now the
+  only thing standing between a config and a misparse.
+  (2026-08-17)
 
 - **Containment refuses a legitimate setup.** A repo that deliberately symlinks
   `TODOS.md` to a shared file outside its tree is now unmeasurable. That is the
@@ -97,13 +104,19 @@ run the three scripts against this repo and they should report something sane.
   error quotes the offending bytes back. Rejections print the path rather than
   passing silently. (security review, 2026-08-17)
 
-- **A config-supplied regex could hang a run indefinitely.** `entryPattern` and
-  `completedHeadingPattern` went straight to `new RegExp`; `^(\s*[-*]\s*(a+)+)$`
-  against a 38-character line ran past eight seconds with nothing able to
-  interrupt it. Both now go through `safeRegExp`, which rejects the nested
-  unbounded-quantifier shape before compiling and is checked once at config load
-  so the failure names the key. Both shipped defaults pass, as do the four
-  custom patterns tested. (security review, 2026-08-17)
+- **A config-supplied regex could hang a run indefinitely, and screening the
+  pattern did not fix it.** `entryPattern` and `completedHeadingPattern` went
+  straight to `new RegExp`; `^(\s*[-*]\s*(a+)+)$` ran past eight seconds against
+  a 38-character line with nothing able to interrupt it. The first fix screened
+  for that nested-quantifier shape — and `^.*.*.*.*.*.*.*.*.*.*.*.*ZZZZ$` (34
+  characters, no groups, no alternation) walked through it and hung on an
+  ordinary bullet line. Counting groups fails for the same reason. Recognising
+  catastrophic backtracking from pattern shape is not a patchable bug, so the
+  regex surface is gone: `completedHeadings` is a literal word list and
+  `entryStyles` a closed set of three names, matched by two hand-written
+  functions with no `new RegExp` on any config value. Verified at exact parity
+  with the retired regex across 15 headings, and `measure`/`stale` output is
+  byte-identical on both test repos. (security review, 2026-08-17)
 
 - **`dead.mjs` had a per-file read cap and no total.** A repo of many small
   files cleared 2MB on every one and still exhausted the heap. Added a 256MB
@@ -124,8 +137,8 @@ run the three scripts against this repo and they should report something sane.
   `docs/` or `test/` directory still wins, and guarded on file extension.
   (2026-08-16)
 
-- **`## Recently shipped` read as live work.** The anchored
-  `completedHeadingPattern` missed it and reported 0% completed mass on a file
+- **`## Recently shipped` read as live work.** The anchored completed-heading
+  match missed it and reported 0% completed mass on a file
   with a 16KB archive. Widened with a closed qualifier list rather than
   unanchoring, because an unanchored pattern matches "Done criteria" and "Not
   completed" and would reclassify live work as finished — wrong in the direction

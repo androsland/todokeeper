@@ -27,27 +27,34 @@ export const DEFAULTS = {
   // Bytes. Below this, one file costs less than the sync between two.
   splitThresholdBytes: 50_000,
 
-  // Headings whose body counts as finished work. Case-insensitive, anchored at
-  // the start of the heading text.
-  // `Recently shipped` is a real heading in a real repo and the anchored form
-  // missed it, reporting 0% completed mass on a file with a 16KB archive. The
-  // qualifier group is deliberately a closed list rather than `.*` — an
-  // unanchored pattern matches "Done criteria" and "Not completed", which would
-  // silently reclassify live work as finished. Wrong in that direction hides
-  // work; wrong in this one only understates the archive.
-  completedHeadingPattern: '^(recently\\s+|previously\\s+|already\\s+)?(completed|complete|done|shipped|archive[ds]?|closed|landed|merged)\\b',
+  // Words that, at the START of a heading, mean the section holds finished work.
+  // Literal and case-insensitive, matched at a word boundary, optionally after
+  // one of `COMPLETED_QUALIFIERS`.
+  //
+  // Anchoring at the start is the load-bearing part. `Recently shipped` is a
+  // real heading in a real repo and a strictly-anchored earlier version missed
+  // it, reporting 0% completed mass on a file with a 16KB archive — but the fix
+  // was a closed qualifier list, not a relaxation, because a word matched
+  // ANYWHERE in a heading matches "Not completed" and would silently reclassify
+  // live work as finished. Wrong in that direction hides work; wrong in this one
+  // only understates the archive.
+  completedHeadings: [
+    'completed', 'complete', 'done', 'shipped',
+    'archive', 'archived', 'archives', 'closed', 'landed', 'merged',
+  ],
 
   // Markers that record a completion INSIDE a topical section, where no
   // `## Completed` heading exists to hold it. Without these the completed mass
   // reads as near-zero on a repo that never adopted a Completed section.
   inlineDoneMarkers: ['✅', '— SHIPPED', '-- SHIPPED', '~~', '[x]', 'DONE:'],
 
-  // How an entry starts. The default matches a top-level bullet, optionally
-  // inside a blockquote — quoting an archived entry rather than deleting it is
-  // a common convention, and a pattern that missed it would report a 10KB
-  // archive section as holding zero entries. A repo whose entries are
-  // paragraph-led (`**Bold lead.** ...` with no bullet) sets its own.
-  entryPattern: '^\\s*(>\\s?)*[-*]\\s',
+  // How an entry starts, as a closed set of names rather than a pattern — see
+  // `ENTRY_STYLES`. A leading blockquote marker is stripped before the style is
+  // applied in every case, because quoting an archived entry rather than
+  // deleting it is a common convention and missing it reports a 10KB archive
+  // section as holding zero entries. A repo whose entries are paragraph-led
+  // (`**Bold lead.** …` with no bullet) sets `["bold-lead"]`.
+  entryStyles: ['bullet'],
 
   // Paths never scanned for referents.
   ignore: ['node_modules', 'dist', 'build', '.git', 'vendor', 'target', '.next'],
@@ -83,100 +90,97 @@ export function contained(root, candidate) {
 }
 
 /**
- * Compile a regex that came from `.todokeeper.json`.
+ * No pattern from `.todokeeper.json` is ever compiled, and that is a security
+ * boundary rather than a simplification.
  *
- * A pattern in repo config is untrusted the same way `targets` is, and an
- * unbounded quantifier applied to a group that itself repeats or alternates —
- * `(a+)+`, `(a*)*`, `(a|a)*` — backtracks exponentially. A 38-character line
- * against `^(\s*[-*]\s*(a+)+)$` runs past eight seconds; nothing in Node can
- * interrupt it once started, so the check has to happen before compiling.
+ * An earlier version took `entryPattern` and `completedHeadingPattern` as
+ * regexes and screened them for the shape that backtracks exponentially — an
+ * unbounded quantifier wrapping a group that itself repeats or alternates,
+ * `(a+)+`. That screen is not merely incomplete, it is the wrong instrument.
+ * `^.*.*.*.*.*.*.*.*.*.*.*.*ZZZZ$` is 34 characters, contains no groups at all
+ * and no alternation, passed every version of the screen, and hung a run past
+ * eight seconds against an ordinary bullet line — no adversarial file content
+ * needed, because the pattern is tested against every line of the file. Group
+ * counting does not see it either. Recognising catastrophic backtracking from
+ * pattern shape is a decidable-security-policy problem, not a bug to patch, and
+ * nothing in Node can interrupt a regex once V8 has entered it.
  *
- * The rule is narrow on purpose: an unbounded quantifier (`*`, `+`, `{n,}`) may
- * not apply to a group containing another unbounded quantifier or an
- * alternation. Both shipped defaults pass — `(…|…|…)?` is bounded by `?`, and
- * `(>\s?)*` repeats a group whose only quantifier is bounded.
- *
- * What it does NOT catch is written into the non-goals: top-level overlapping
- * alternation, blowups spread across sibling groups, and backreference-driven
- * cases all pass this check. It closes the shape that was demonstrated, not the
- * class.
+ * So the knobs are literal instead. `completedHeadings` is a word list and
+ * `entryStyles` a closed set of names; both are matched by the two functions
+ * below, whose cost is linear in the line and in the list. Every shape the two
+ * shipped defaults expressed is still expressible, and a repo that needs a
+ * genuinely new bullet shape gets a new entry in `ENTRY_STYLES` rather than a
+ * regex. What is lost is arbitrary matching — see the non-goals in README.md.
  */
-export function safeRegExp(pattern, flags, label) {
-  if (typeof pattern !== 'string') {
-    throw new Error(`${label} must be a string, got ${typeof pattern}`);
-  }
-  if (pattern.length > 500) {
-    throw new Error(`${label} is ${pattern.length} characters; the cap is 500`);
-  }
-  const risk = nestedUnboundedQuantifier(pattern);
-  if (risk) {
-    throw new Error(
-      `${label} can backtrack exponentially: an unbounded quantifier applies to `
-      + `the group ${risk}, which itself repeats or alternates. Rewrite it so the `
-      + `inner group is bounded (\`?\`, \`{0,3}\`) or the outer quantifier is.`,
-    );
-  }
-  return new RegExp(pattern, flags);
-}
 
-/** The group text when one is found, else null. Escapes and classes are skipped. */
-function nestedUnboundedQuantifier(pattern) {
-  const opens = [];
-  for (let i = 0; i < pattern.length; i += 1) {
-    const ch = pattern[i];
-    if (ch === '\\') { i += 1; continue; }
-    if (ch === '[') { // character class: no groups inside, and `]` is literal first
-      i += 1;
-      if (pattern[i] === '^') i += 1;
-      if (pattern[i] === ']') i += 1;
-      while (i < pattern.length && pattern[i] !== ']') {
-        if (pattern[i] === '\\') i += 1;
-        i += 1;
-      }
-      continue;
-    }
-    if (ch === '(') { opens.push(i); continue; }
-    if (ch === ')') {
-      const start = opens.pop();
-      if (start === undefined) continue;
-      const body = pattern.slice(start + 1, i);
-      const outer = quantifierAt(pattern, i + 1);
-      if (outer === 'unbounded' && (hasUnbounded(body) || hasAlternation(body))) {
-        return `\`${pattern.slice(start, i + 1)}\``;
-      }
+/** Words that may precede a completed-heading word. Closed on purpose. */
+const COMPLETED_QUALIFIERS = ['recently', 'previously', 'already'];
+
+/**
+ * Does this heading open a section of finished work?
+ *
+ * Anchored: the word must start the heading, optionally after one qualifier.
+ * That is what keeps `Not completed` out — the completed word is present but
+ * does not start the heading.
+ *
+ * What anchoring does NOT keep out is a heading that STARTS with a completed
+ * word and goes on to mean something else: `Done criteria` matches, and reads
+ * as an archive. The regex this replaced had the same behaviour, so it is a
+ * standing limit rather than a regression, and it errs toward understating live
+ * work rather than hiding it. The word boundary only stops a longer word —
+ * `Doneness` and `Archiver notes` do not match.
+ */
+export function isCompletedHeading(heading, words) {
+  if (typeof heading !== 'string') return false;
+  let text = heading.trim().toLowerCase();
+  for (const q of COMPLETED_QUALIFIERS) {
+    if (text.startsWith(q) && /\s/.test(text[q.length] ?? '')) {
+      text = text.slice(q.length).trimStart();
+      break;
     }
   }
-  return null;
-}
-
-function quantifierAt(pattern, i) {
-  const ch = pattern[i];
-  if (ch === '*' || ch === '+') return 'unbounded';
-  if (ch === '?') return 'bounded';
-  if (ch === '{') {
-    const close = pattern.indexOf('}', i);
-    if (close === -1) return null;
-    return /^\{\d+,\}$/.test(pattern.slice(i, close + 1)) ? 'unbounded' : 'bounded';
-  }
-  return null;
-}
-
-function hasUnbounded(body) {
-  for (let i = 0; i < body.length; i += 1) {
-    if (body[i] === '\\') { i += 1; continue; }
-    if (quantifierAt(body, i) === 'unbounded') return true;
+  for (const word of words) {
+    const w = String(word).toLowerCase();
+    if (!w || !text.startsWith(w)) continue;
+    // `\b`: the next character must not continue the word. Checking rather than
+    // returning false lets `complete` sit before `completed` in the list
+    // without shadowing it.
+    const next = text[w.length];
+    if (next === undefined || !/[a-z0-9_]/.test(next)) return true;
   }
   return false;
 }
 
-function hasAlternation(body) {
-  let depth = 0;
-  for (let i = 0; i < body.length; i += 1) {
-    const ch = body[i];
-    if (ch === '\\') { i += 1; continue; }
-    if (ch === '(') depth += 1;
-    else if (ch === ')') depth -= 1;
-    else if (ch === '|' && depth === 0) return true;
+/**
+ * How a repo writes the first line of an entry. Each test runs on the line with
+ * any blockquote prefix and up to one leading space already removed.
+ */
+const ENTRY_STYLES = {
+  bullet: (s) => /^[-*+][ \t]/.test(s),
+  numbered: (s) => /^\d{1,9}[.)][ \t]/.test(s),
+  'bold-lead': (s) => s.startsWith('**'),
+};
+
+export const ENTRY_STYLE_NAMES = Object.keys(ENTRY_STYLES);
+
+const QUOTE_PREFIX = /^(\s*>\s?)+/;
+
+/**
+ * Is this line the start of a new entry?
+ *
+ * Indent is measured AFTER stripping blockquote markers, so `> - **x**` reads
+ * as a top-level entry rather than a nested one, and more than one space of
+ * indent means a nested bullet continuing the entry above.
+ */
+export function isEntryStart(line, styles) {
+  const quoted = QUOTE_PREFIX.exec(line);
+  const rest = quoted ? line.slice(quoted[0].length) : line;
+  const indent = /^[ \t]*/.exec(rest)[0].length;
+  if (indent > 1) return false;
+  const body = rest.slice(indent);
+  for (const name of styles) {
+    const test = ENTRY_STYLES[name];
+    if (test && test(body)) return true;
   }
   return false;
 }
@@ -196,6 +200,23 @@ export function loadConfig(root) {
   } catch (err) {
     throw new Error(`.todokeeper.json is not valid JSON: ${err.message}`);
   }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('.todokeeper.json must contain a JSON object');
+  }
+  // Unknown keys are rejected rather than ignored. Without this, a config
+  // carrying `entryPattern` — the regex knob this tool deliberately no longer
+  // has — would be accepted in silence and quietly run on defaults, which reads
+  // as "my pattern is in effect" and is the worst of the three outcomes.
+  const unknown = Object.keys(parsed).filter((k) => !(k in DEFAULTS));
+  if (unknown.length) {
+    throw new Error(
+      `.todokeeper.json: unknown key(s) ${unknown.map((k) => `\`${k}\``).join(', ')}. `
+      + `Known keys: ${Object.keys(DEFAULTS).join(', ')}.`
+      + (unknown.some((k) => k === 'entryPattern' || k === 'completedHeadingPattern')
+        ? ' Regex config was removed on purpose — use `entryStyles` and `completedHeadings`.'
+        : ''),
+    );
+  }
   const config = { ...DEFAULTS, ...parsed, _source: relative(root, path) };
   if (!Array.isArray(config.targets) || config.targets.some((t) => typeof t !== 'string')) {
     throw new Error('.todokeeper.json: `targets` must be an array of strings');
@@ -203,10 +224,23 @@ export function loadConfig(root) {
   if (!Array.isArray(config.ignore) || config.ignore.some((t) => typeof t !== 'string')) {
     throw new Error('.todokeeper.json: `ignore` must be an array of strings');
   }
-  // Compile both patterns now, so a bad one fails at startup with the key named
-  // rather than midway through a report.
-  safeRegExp(config.completedHeadingPattern, 'i', '`completedHeadingPattern`');
-  safeRegExp(config.entryPattern, '', '`entryPattern`');
+  if (!Array.isArray(config.completedHeadings)
+    || config.completedHeadings.some((t) => typeof t !== 'string')) {
+    throw new Error('.todokeeper.json: `completedHeadings` must be an array of strings');
+  }
+  // Checked at load, so an unknown style names the key rather than silently
+  // matching nothing and reporting every section as holding zero entries.
+  if (!Array.isArray(config.entryStyles) || config.entryStyles.length === 0) {
+    throw new Error('.todokeeper.json: `entryStyles` must be a non-empty array');
+  }
+  for (const style of config.entryStyles) {
+    if (!ENTRY_STYLE_NAMES.includes(style)) {
+      throw new Error(
+        `.todokeeper.json: \`entryStyles\` has no style ${JSON.stringify(style)}. `
+        + `Known styles: ${ENTRY_STYLE_NAMES.join(', ')}.`,
+      );
+    }
+  }
   return config;
 }
 
@@ -316,8 +350,7 @@ export function sections(text) {
  * before the next bullet at the same-or-shallower indent, so a multi-paragraph
  * entry stays one entry rather than becoming one per line.
  */
-export function entries(body, entryPattern) {
-  const re = safeRegExp(entryPattern, '', '`entryPattern`');
+export function entries(body, entryStyles) {
   const lines = body.split('\n');
   const out = [];
   let current = null;
@@ -331,13 +364,9 @@ export function entries(body, entryPattern) {
       if (current) current.lines.push(line);
       continue;
     }
-    // Measure indent after any blockquote markers, so `> - **x**` reads as a
-    // top-level entry rather than a nested one.
-    const unquoted = line.replace(/^(\s*>\s?)+/, '');
-    const indent = /^\s*/.exec(unquoted)[0].length;
-    if (fence === null && re.test(line) && indent <= 1) {
+    if (fence === null && isEntryStart(line, entryStyles)) {
       if (current) out.push(current);
-      current = { lines: [line], indent };
+      current = { lines: [line] };
     } else if (current) {
       current.lines.push(line);
     }

@@ -21,7 +21,7 @@
 
 import { readFileSync } from 'node:fs';
 import {
-  loadConfigOrExit, repoRoot, resolveTargets, sections, entries, rel, safeRegExp,
+  loadConfigOrExit, repoRoot, resolveTargets, sections, entries, rel, isCompletedHeading,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -39,7 +39,6 @@ if (targets.length === 0) {
   process.exit(2);
 }
 
-const completedRe = safeRegExp(config.completedHeadingPattern, 'i', '`completedHeadingPattern`');
 const files = [];
 
 for (const abs of targets) {
@@ -58,14 +57,14 @@ for (const abs of targets) {
   // would be counted as live.
   let completedDepth = null;
   for (const sec of secs) {
-    const isCompletedHeading = sec.heading != null && completedRe.test(sec.heading);
-    if (sec.heading != null && completedDepth != null && sec.depth <= completedDepth && !isCompletedHeading) {
+    const completedHere = sec.heading != null && isCompletedHeading(sec.heading, config.completedHeadings);
+    if (sec.heading != null && completedDepth != null && sec.depth <= completedDepth && !completedHere) {
       completedDepth = null;
     }
-    if (isCompletedHeading) completedDepth = sec.depth;
+    if (completedHere) completedDepth = sec.depth;
 
     const inCompleted = completedDepth != null;
-    const found = entries(sec.body, config.entryPattern);
+    const found = entries(sec.body, config.entryStyles);
     const marks = config.inlineDoneMarkers.reduce(
       (n, m) => n + sec.body.split(m).length - 1,
       0,

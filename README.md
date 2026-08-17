@@ -90,20 +90,28 @@ heading. Otherwise, `.todokeeper.json` at the repo root:
 {
   "targets": ["TODOS.md", "todos"],
   "splitThresholdBytes": 50000,
-  "completedHeadingPattern": "^(recently\\s+)?(completed|done|shipped)\\b",
+  "completedHeadings": ["completed", "done", "shipped", "archived"],
   "inlineDoneMarkers": ["✅", "— SHIPPED", "~~", "[x]", "DONE:"],
-  "entryPattern": "^\\s*(>\\s?)*[-*]\\s",
+  "entryStyles": ["bullet"],
   "ignore": ["node_modules", "dist", "vendor"]
 }
 ```
 
-`targets` takes files or directories. Every key is optional.
+`targets` takes files or directories. Every key is optional; an unknown key is
+an error rather than a silent no-op.
+
+**No key takes a regex, deliberately** — see [the safety limits](#limits-of-the-safety-checks).
+`completedHeadings` is a list of literal words matched case-insensitively at the
+*start* of a heading, optionally after `recently` / `previously` / `already`, so
+`## Recently shipped` counts and `## Not completed` does not. `entryStyles` is
+any of `bullet` (`-`, `*`, `+`), `numbered` (`1.`, `2)`) and `bold-lead`
+(`**Bold lead.** …` with no bullet); a leading blockquote marker is stripped
+first in every case, so a `> - **…**` archive parses without configuration.
 
 **Let the first run pick the key.** 0% completed mass on a file that plainly
-holds finished work means `completedHeadingPattern` missed the heading. A section
-reading as 0 entries means `entryPattern` does not match how the repo writes a
-bullet — blockquoted archives (`> - **…**`) are the usual culprit, which is why
-the default allows them.
+holds finished work means the heading word is missing from `completedHeadings`.
+A section reading as 0 entries means `entryStyles` does not name how this repo
+writes an entry.
 
 ## What it does NOT do
 
@@ -147,16 +155,28 @@ each one does not cover:
   path named on stderr. This also refuses a legitimate setup: a repo that
   deliberately symlinks `TODOS.md` to a shared file elsewhere will not be
   measured. Run todokeeper where the real file lives instead.
-- **The regex check closes one shape, not the class.** A config pattern is
-  rejected when an unbounded quantifier wraps a group that itself repeats or
-  alternates — `(a+)+`, `(a*)*`, `(a|a)*` — which is the shape that hangs the
-  script for minutes on a 38-character line. Overlapping top-level alternation,
-  a blowup spread across sibling groups, and backreference-driven cases all
-  still compile. It is a guard rail, not a sandbox.
+- **No regex is accepted from config, which is why the config knobs are lists.**
+  A regex from an untrusted file can hang the process with no way to interrupt
+  it: `^.*.*.*.*.*.*.*.*.*.*.*.*ZZZZ$` is 34 characters, has no groups and no
+  alternation, and runs past eight seconds against an ordinary bullet line,
+  because the pattern is tested against every line of the file. An earlier
+  version screened patterns for the textbook `(a+)+` shape; that example passed
+  the screen, and so would the next one, because recognising catastrophic
+  backtracking from pattern shape cannot be done in general and V8 offers no
+  timeout. **The cost is real:** `entryStyles` covers only the three entry
+  shapes it names, so a deferred-work file that marks entries some other way is
+  not parseable here at all — that is a missing style to add, not a config to
+  write.
 - **`dead.mjs` reads the repo into memory and stops at 256MB.** Past that it
   reports how many files went unscanned, and its `ABSENT` verdicts are incomplete
   by exactly that many files. Narrow `ignore` and re-run rather than reading the
   truncated result.
+
+Two things these guards do **not** cover. The path check resolves and then
+reads, so a symlink swapped in between the two calls wins the race — an attacker
+who can do that already has write access to the same tree. And a heading that
+begins with a completed word but means something else (`## Done criteria`) is
+read as an archive; the anchor stops `## Not completed`, not this.
 
 ## Splitting and archiving
 

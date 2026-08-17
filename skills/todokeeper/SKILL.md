@@ -43,19 +43,27 @@ repo root:
 {
   "targets": ["TODOS.md", "todos"],
   "splitThresholdBytes": 50000,
-  "completedHeadingPattern": "^(recently\\s+)?(completed|done|shipped)\\b",
+  "completedHeadings": ["completed", "done", "shipped", "archived"],
   "inlineDoneMarkers": ["✅", "— SHIPPED", "~~", "[x]", "DONE:"],
+  "entryStyles": ["bullet"],
   "ignore": ["node_modules", "dist", "vendor"]
 }
 ```
 
 `targets` accepts files or directories. Every key is optional and overrides one
-default.
+default; an unknown key is an error, not a silent no-op.
+
+**No key takes a regex** — `.todokeeper.json` ships inside the repo being
+scanned, and a regex from an untrusted file can hang the run unstoppably.
+`completedHeadings` holds literal words matched at the *start* of a heading
+(optionally after `recently` / `previously` / `already`). `entryStyles` is any
+of `bullet`, `numbered`, `bold-lead`; a blockquote prefix is stripped before the
+style applies, so `> - **…**` archives parse with no config.
 
 Reach for config when the first run looks wrong, and let the first run tell you
 which key: 0% completed mass on a file that obviously holds finished work means
-`completedHeadingPattern` missed the heading; a section that reads as 0 entries
-means `entryPattern` does not match how this repo writes a bullet.
+the heading's word is missing from `completedHeadings`; a section that reads as
+0 entries means `entryStyles` does not name how this repo writes an entry.
 
 ## What the three reports mean
 
@@ -191,12 +199,18 @@ symlink is skipped and named on stderr. If a repo genuinely keeps its
 deferred-work file elsewhere and symlinks to it, this refuses to measure it —
 run the scripts where the real file lives.
 
-**The regex safety check closes one shape, not the class.** A config pattern is
-rejected before compiling when an unbounded quantifier wraps a group that itself
-repeats or alternates (`(a+)+`, `(a|a)*`). Overlapping top-level alternation and
-blowups spread across sibling groups still compile, and nothing in Node can
-interrupt a regex once it starts. If a run hangs after a config edit, the pattern
-is the first suspect.
+**Config takes no regex, so entry and heading matching is only as flexible as
+the lists allow.** A pattern from a file that ships inside the scanned repo can
+hang the run with nothing able to interrupt it, and screening patterns by shape
+does not work — a 34-character pattern with no groups and no alternation defeats
+it. So `entryStyles` names three shapes and `completedHeadings` holds literal
+words. A repo that marks entries some fourth way cannot be configured into
+working; it needs a new style added to `ENTRY_STYLES` in `lib.mjs`.
+
+**A heading that opens with a completed word is read as an archive**, even when
+it means something else — `## Done criteria` counts as completed. Anchoring
+keeps `## Not completed` out; it cannot keep this out. Check the heading list a
+run reports before trusting its completed mass.
 
 **`dead.mjs` reads the repo into memory and stops at 256MB.** When it stops it
 says how many files it skipped, and `ABSENT` is then incomplete by that many

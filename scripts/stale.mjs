@@ -24,7 +24,7 @@ import { readFileSync } from 'node:fs';
 import {
   loadConfigOrExit, repoRoot, resolveTargets, sections, entries,
   lastCommitTouching, lastCommitChangingPhrase, classifyReferent,
-  buildFileIndex, rel, daysBetween, safeRegExp,
+  buildFileIndex, rel, daysBetween, isCompletedHeading,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -43,7 +43,6 @@ if (targets.length === 0) {
 }
 
 const targetSpecs = targets.map((t) => rel(root, t));
-const completedRe = safeRegExp(config.completedHeadingPattern, 'i', '`completedHeadingPattern`');
 const index = buildFileIndex(root, config.ignore);
 
 // git log -S over the same phrase repeatedly is the slow part; entries in one
@@ -59,15 +58,15 @@ for (const abs of targets) {
   let completedDepth = null;
 
   for (const sec of sections(text)) {
-    const isCompletedHeading = sec.heading != null && completedRe.test(sec.heading);
-    if (sec.heading != null && completedDepth != null && sec.depth <= completedDepth && !isCompletedHeading) {
+    const completedHere = sec.heading != null && isCompletedHeading(sec.heading, config.completedHeadings);
+    if (sec.heading != null && completedDepth != null && sec.depth <= completedDepth && !completedHere) {
       completedDepth = null;
     }
-    if (isCompletedHeading) completedDepth = sec.depth;
+    if (completedHere) completedDepth = sec.depth;
     // Finished work does not go stale. Skip it rather than filling the report.
     if (completedDepth != null) continue;
 
-    for (const entry of entries(sec.body, config.entryPattern)) {
+    for (const entry of entries(sec.body, config.entryStyles)) {
       const phrase = entry.lead;
       // The needle is the raw-bytes form; the lead is the display form. They
       // differ whenever the entry's bold lead wraps across lines.

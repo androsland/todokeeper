@@ -27,7 +27,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import {
   loadConfigOrExit, repoRoot, resolveTargets, sections, entries,
-  classifyReferent, buildFileIndex, walkFiles, isText, rel, safeRegExp,
+  classifyReferent, buildFileIndex, walkFiles, isText, rel, isCompletedHeading,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -172,7 +172,6 @@ if (unread > 0 || skippedForSize > 0) {
   );
 }
 
-const completedRe = safeRegExp(config.completedHeadingPattern, 'i', '`completedHeadingPattern`');
 const index = buildFileIndex(root, config.ignore);
 const seen = new Map();
 
@@ -182,14 +181,14 @@ for (const abs of targets) {
   let completedDepth = null;
 
   for (const sec of sections(text)) {
-    const isCompletedHeading = sec.heading != null && completedRe.test(sec.heading);
-    if (sec.heading != null && completedDepth != null && sec.depth <= completedDepth && !isCompletedHeading) {
+    const completedHere = sec.heading != null && isCompletedHeading(sec.heading, config.completedHeadings);
+    if (sec.heading != null && completedDepth != null && sec.depth <= completedDepth && !completedHere) {
       completedDepth = null;
     }
-    if (isCompletedHeading) completedDepth = sec.depth;
+    if (completedHere) completedDepth = sec.depth;
     if (completedDepth != null) continue;
 
-    for (const entry of entries(sec.body, config.entryPattern)) {
+    for (const entry of entries(sec.body, config.entryStyles)) {
       for (const raw of entry.referents) {
         const c = classifyReferent(raw, index);
         // Prose is a command or a sentence; external is a package or a URL; a
