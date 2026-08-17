@@ -328,9 +328,9 @@ run the three scripts against this repo and they should report something sane.
   branch twelve lines above kept calling the old name. `node --check` parses
   without resolving identifiers, so all four scripts reported clean while
   `dead.mjs` and `stale.mjs` threw `ReferenceError` on any repo whose
-  deferred-work file names a glob — which is most of them: a larger repo, another repo,
-  a tooling repo and todokeeper itself all crashed, only a small repo (5 referents,
-  no globs) survived. Every proof-of-concept for the round used a plain path, so
+  deferred-work file names a glob — which was four of the five repos tested,
+  todokeeper itself included; only the one with 5 referents and no globs
+  survived. Every proof-of-concept for the round used a plain path, so
   no hand-run took the broken branch. Caught by diffing `--json` against five
   real repos, where four came back as **empty files**, and only because stderr
   had been discarded did that first read as a diff rather than a crash.
@@ -355,8 +355,8 @@ run the three scripts against this repo and they should report something sane.
   referents, which against `dead.mjs`'s 256MB budget is **~4.2 hours**.
   `stale.mjs` spawns one `git log -S` child per entry and was unbounded the same
   way. `MAX_REFERENTS`/`MAX_ENTRIES` now sit at 5,000, chosen from measurement
-  across six real repos — largest referent count 1,219 (a larger repo), largest entry
-  count 195 (another repo), and **they are different repos**, so the cap is
+  across six real repos — largest referent count 1,219, largest entry count
+  195, and **they are different repos**, so the cap is
   4.1× and 25.6× the observed maxima and cannot fire on anything on this
   machine. Both consumers announce truncation on stderr *and* in the report.
   (b) *Provenance.* `.todokeeper.json` ships inside the repo being audited, so
@@ -406,7 +406,7 @@ run the three scripts against this repo and they should report something sane.
   `readTarget` and `loadConfig` too. After: the `/dev/zero` case exits 0 in 0.04s
   at 49MB, the escaping symlink produces output identical to having no manifest
   at all, and an in-repo symlinked manifest still resolves. Parity across two
-  real repos: a small repo byte-identical on all three scripts; todokeeper's
+  real repos: the smaller byte-identical on all three scripts; todokeeper's
   self-scan differs only in line numbers and three sample strings, verdicts
   unchanged at 22 referents.
   (security review round 6, 2026-08-17)

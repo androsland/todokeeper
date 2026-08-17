@@ -271,9 +271,9 @@ export const MANIFEST_CAP = 1_000_000;
  * 5,000 comes from measurement rather than taste, and the two dimensions were
  * measured over overlapping-but-different sets of repos, so they are quoted
  * separately rather than paired:
- *  - Referents, six repos: 1,219 (a larger repo, a 318KB target) then 875, 574, 490,
- *    229, 54.
- *  - Entries, six repos: 195 (another repo) then 188, 113, 97, 58, 4. The
+ *  - Referents, six repos: 1,219 (the largest, a 318KB target) then 875, 574,
+ *    490, 229, 54.
+ *  - Entries, six repos: 195 then 188, 113, 97, 58, 4. The
  *    largest file by bytes is NOT the one with the most entries.
  * So the cap sits at 4.1× the largest referent count and 25.6× the largest
  * entry count observed anywhere on this machine.
@@ -315,8 +315,8 @@ export const MAX_ENTRIES = 5_000;
  * The only thing standing between that and the operator's terminal was
  * `TARGET_CAP`, which is a byte cap and admits ~5.3M pairs.
  *
- * 64 is 5.8x the largest `from` list measured on this machine: 11 (another repo),
- * then 4 (todokeeper), 1, 1. Storage is capped rather than display truncated,
+ * 64 is 5.8x the largest `from` list measured on this machine: 11, then 4
+ * (this repo's own self-scan), 1, 1. Storage is capped, not display truncated,
  * so a repo below the cap prints byte-identically to before — all four
  * measured repos do.
  *
