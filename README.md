@@ -204,8 +204,26 @@ throughout. Each guard, and what it does not cover:
   subject. So C0 and C1 are removed at every print sink; tab, newline and
   carriage return survive as layout. **This strips control characters, never a
   character set** — Greek, German and emoji pass through untouched, for the
-  same reason non-ASCII is legal in the word lists. `--json` never needed this:
-  `JSON.stringify` escapes control bytes to `\uXXXX` on its own.
+  same reason non-ASCII is legal in the word lists.
+- **`--json` escapes those bytes rather than stripping them** — its output is
+  safe to `cat`, and a parser still decodes the escape back to the repo's
+  original codepoint, which is the fidelity the flag exists for. This was
+  documented as needing no handling at all, on the grounds that
+  `JSON.stringify` escapes control bytes by itself. It escapes **C0 and nothing
+  else**: measured, ESC and NUL come out escaped, but DEL emits a raw `0x7F`
+  and every C1 codepoint emits its raw UTF-8 form (`U+009B` → `0xC2 0x9B`) —
+  precisely the range the human-readable strip was extended to cover. One
+  codepoint was tested and the result generalised to a range.
+- **Nothing outside the repository is read — and that now includes
+  `package.json` and `composer.json`.** Every other path went through the
+  containment check; these two had only a size cap. `package.json` is
+  git-trackable as a symlink, so `package.json -> ../outside/anything` ships in
+  a clone with no config involved: measured, an external `dependencies` key
+  reclassified an in-repo referent and dropped it out of `dead.mjs`'s report,
+  and `package.json -> /dev/zero` read **3.9GB resident in ten seconds** and was
+  still climbing when the timeout killed it. A device or fifo reports size 0, so
+  no size cap can bound it — every read is now gated on the path resolving
+  inside the tree *and* on it being a regular file.
 - **A target file over 64MB is skipped rather than read.** `readFileSync` has
   no ceiling below V8's 537MB string limit and the allocation fails long before
   it: measured, a 53.7MB file parses correctly in 1.54s while holding **490MB
@@ -216,7 +234,8 @@ throughout. Each guard, and what it does not cover:
   report itself, because it changes the total, the completed mass and the
   threshold verdict — a skipped file counted as measured produces a number that
   is simply wrong. `.todokeeper.json`, `package.json` and `composer.json` get
-  the same treatment at 1MB. **What it does not cover:** it bounds one file,
+  the same treatment at 1MB, plus the containment and regular-file checks
+  above. **What it does not cover:** it bounds one file,
   never the set — five 63MB targets still sum past memory, and nothing totals
   them. And a byte cap is not a memory cap; the ~9× amplification is a property
   of one V8 on one machine.
@@ -233,10 +252,13 @@ read as an archive; the anchor stops `## Not completed`, not this. The size cap
 bounds bytes, not work: measured, a 489KB file of 50,000 headings against a full
 100 × 64 word list of U+0130 takes **7.1 seconds** — 130× under the size cap and
 still slow, because the cost is `headings × Σ(word lengths)` and only the config
-half of that multiplication is bounded. And an oversize
-`package.json` is skipped **silently** — the dependency filter simply stops
-applying, which costs a few extra entries in a bucket a human reads, but unlike
-the target skips nothing says it happened.
+half of that multiplication is bounded. And a `package.json` that is rejected
+for any reason — oversize, resolving outside the tree, or not a regular file —
+is skipped **silently**: the dependency filter simply stops applying, which
+costs a few extra entries in a bucket a human reads, but unlike the target skips
+nothing says it happened. That last one is deliberate and it is a real
+trade-off, because the same silence covers the ordinary case of a repo that has
+no `package.json` at all.
 
 ## Splitting and archiving
 

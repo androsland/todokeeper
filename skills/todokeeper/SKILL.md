@@ -195,12 +195,17 @@ entries in a bucket a human reads anyway and affects nothing else.
 string after a `//` is misread as commented. That biases toward reporting a live
 referent as COMMENT-ONLY — a false alarm rather than a hidden tombstone.
 
-**Nothing outside the repository is read, including a deliberate symlink.**
-`.todokeeper.json` ships inside the repo being scanned, so it is treated as
-untrusted: a `targets` entry that resolves out of the tree through `..` or a
-symlink is skipped and named on stderr. If a repo genuinely keeps its
-deferred-work file elsewhere and symlinks to it, this refuses to measure it —
-run the scripts where the real file lives.
+**Nothing outside the repository is read, including a deliberate symlink, and
+nothing that is not a regular file is read at all.** `.todokeeper.json` ships
+inside the repo being scanned, so it is treated as untrusted: a `targets` entry
+that resolves out of the tree through `..` or a symlink is skipped and named on
+stderr. If a repo genuinely keeps its deferred-work file elsewhere and symlinks
+to it, this refuses to measure it — run the scripts where the real file lives.
+The regular-file half is not redundant with the containment half: a size cap
+bounds a file, and a character device or fifo reports size 0 and then reads
+without end. `package.json` and `composer.json` had neither check until this
+was found; a `package.json` skipped for either reason is skipped **silently**,
+unlike a skipped target.
 
 **Config takes no regex, so entry and heading matching is only as flexible as
 the lists allow.** A pattern from a file that ships inside the scanned repo can
@@ -242,7 +247,9 @@ exists to print findings, that means a hostile repo could redraw a `SUSPECT`
 line to look clean. C0 and C1 are removed at every print sink; tab, newline and
 carriage return survive. Only control characters go: Greek, German and emoji
 are untouched. Use `--json` if you need the exact bytes — it escapes them
-rather than stripping them.
+rather than stripping them, so a parser recovers the original codepoint. That
+escaping is todokeeper's own: `JSON.stringify` covers C0 only, and this line
+used to credit it with the whole range.
 
 **`dead.mjs` reads the repo into memory and stops at 256MB.** When it stops it
 says how many files it skipped, and `ABSENT` is then incomplete by that many

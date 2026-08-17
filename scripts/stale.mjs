@@ -24,7 +24,7 @@ import {
   loadConfigOrExit, repoRoot, resolveTargets, sections, entries,
   lastCommitTouching, lastCommitChangingPhrase, classifyReferent,
   buildFileIndex, rel, daysBetween, isCompletedHeading,
-  readTarget, safe,
+  readTarget, safe, jsonSafe,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -136,9 +136,9 @@ for (const abs of targets) {
 }
 
 if (asJson) {
-  console.log(JSON.stringify({
+  console.log(jsonSafe({
     root, minDays, entries: results, unreadTargets,
-  }, null, 2));
+  }));
   process.exit(0);
 }
 

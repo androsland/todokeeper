@@ -28,7 +28,7 @@ import { readFileSync, statSync } from 'node:fs';
 import {
   loadConfigOrExit, repoRoot, resolveTargets, sections, entries,
   classifyReferent, buildFileIndex, walkFiles, isText, rel, isCompletedHeading,
-  readTarget, safe,
+  readTarget, safe, jsonSafe,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -253,7 +253,7 @@ for (const ref of seen.values()) {
 }
 
 if (asJson) {
-  console.log(JSON.stringify({ root, referents: report, unreadTargets }, null, 2));
+  console.log(jsonSafe({ root, referents: report, unreadTargets }));
   process.exit(0);
 }
 

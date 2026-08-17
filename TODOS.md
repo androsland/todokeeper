@@ -102,14 +102,28 @@ run the three scripts against this repo and they should report something sane.
   for WHICH file to drop — a choice with no obviously right answer.
   (security review, 2026-08-17)
 
-- **An oversize `package.json` degrades the dependency filter silently.**
-  `declaredDependencies` now skips a manifest over `MANIFEST_CAP` before
-  reading it, and says nothing — it shares the existing catch-all path where a
-  missing or unparseable manifest simply means the filter does not apply. The
-  cost is the documented one (a few extra entries in a bucket a human reads),
-  but unlike the target skips it is not announced, so a 2MB `package.json`
-  looks like a repo with no dependencies.
-  (security review, 2026-08-17)
+- **A rejected `package.json` degrades the dependency filter silently.**
+  `declaredDependencies` skips a manifest that is oversize, resolves outside the
+  tree, or is not a regular file, and says nothing — it shares the existing
+  catch-all path where a missing or unparseable manifest simply means the filter
+  does not apply. The cost is the documented one (a few extra entries in a
+  bucket a human reads), but unlike the target skips it is not announced, so a
+  2MB `package.json` looks like a repo with no dependencies. Announcing it would
+  also have to stay quiet for the ordinary no-manifest case, which is the same
+  code path — that separation is the actual work, and it has not been done.
+  (security review, 2026-08-17; widened 2026-08-17 when containment and
+  regular-file checks joined the cap)
+
+- **Nothing mechanically stops a literal control byte from landing in source.**
+  Three separate edits this session wrote raw `0x1B` / `0x00` / `0x7F` bytes into
+  `lib.mjs` because the editing tool interpreted a typed escape sequence, and
+  each was caught only by reading the file back through `od`. In a tool whose
+  entire subject is control characters, a stray one in `CONTROL_CHARS` itself
+  would be invisible in every diff view and would silently change the class it
+  matches. A ~10-line source scan asserting zero non-layout control bytes across
+  `scripts/*.mjs` would close it. Not built here because it is executable
+  behaviour and gets its own change.
+  (self-review, 2026-08-17)
 
 - **The 256MB read budget in `dead.mjs` is a guess, not a measurement.** It was
   chosen to sit below a default Node heap; nothing measured what the scanned
@@ -119,6 +133,37 @@ run the three scripts against this repo and they should report something sane.
   (2026-08-17)
 
 ## Completed
+
+- **Two claims about the guards were false, and a review round proved both.**
+  (a) *`--json` was never affected — `JSON.stringify` escapes control bytes on
+  its own.* It escapes **C0 and nothing else**. Measured: ESC and NUL come out
+  escaped; DEL emits a raw `0x7F` and every C1 codepoint emits its raw UTF-8
+  form (`U+009B` → `0xC2 0x9B`) — exactly the range `CONTROL_CHARS` had been
+  widened to cover on purpose. One codepoint was tested and generalised to a
+  range, then written into a code comment, the README and the skill. `jsonSafe`
+  now escapes `U+007F–U+009F` in the serialised text at all four `--json` sinks;
+  escaping rather than stripping, because `--json` exists to preserve the bytes
+  and a parser decodes the escape back. Verified: 0 decoded control codepoints
+  across 3 scripts × 2 modes, `JSON.parse` recovers `U+009B` and `U+007F`
+  exactly, and the payload text still appears neutered so the zero is escaping
+  rather than a silenced path.
+  (b) *Nothing outside the repository is read.* `declaredDependencies` read
+  `package.json` and `composer.json` via `join(root, file)` with no `contained()`
+  — the only two reads in the tool that never had it, missed again by the commit
+  that added `MANIFEST_CAP` to those exact lines. `package.json` is git-trackable
+  as a symlink, so this needs no config: measured, `package.json ->
+  ../outside/evil.json` let an external `dependencies` key reclassify an in-repo
+  referent and drop it out of `dead.mjs`'s report, and `package.json ->
+  /dev/zero` reached **3.9GB resident in ten seconds**, still climbing at the
+  timeout. A size cap cannot bound that — a device stats at size 0 — so the read
+  is now gated on `contained()` **and** `isFile()`, the latter added to
+  `readTarget` and `loadConfig` too. After: the `/dev/zero` case exits 0 in 0.04s
+  at 49MB, the escaping symlink produces output identical to having no manifest
+  at all, and an in-repo symlinked manifest still resolves. Parity across two
+  real repos: a small repo byte-identical on all three scripts; todokeeper's
+  self-scan differs only in line numbers and three sample strings, verdicts
+  unchanged at 22 referents.
+  (security review round 6, 2026-08-17)
 
 - **An auditing tool printed repo-controlled escape sequences straight to the
   terminal, and read its own target with no cap at all.** Two findings, one

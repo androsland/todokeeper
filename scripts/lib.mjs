@@ -81,9 +81,16 @@ export const DEFAULTS = {
  *
  * Verified before and after: an OSC-0 sequence planted in a heading, in a
  * backticked referent and in a commit subject reached stdout as raw 0x1B from
- * all three scripts. `--json` was never affected — `JSON.stringify` escapes
- * control bytes to `\uXXXX` on its own — so this guards the human-readable
- * path only.
+ * all three scripts.
+ *
+ * This guards the human-readable path. `--json` is guarded separately by
+ * `jsonSafe`, and the reason is a claim that was made here and was wrong:
+ * `JSON.stringify` escapes C0 and NOTHING else. Measured — ESC (U+001B) and
+ * NUL come out as their six-character JSON escape, but DEL (U+007F) emits a raw
+ * 0x7F byte and every C1 codepoint emits its raw two-byte UTF-8 form
+ * (U+009B becomes 0xC2 0x9B). That is exactly the range added below on
+ * purpose. Testing one codepoint and generalising to the range is how the
+ * hole got documented as closed.
  *
  * This strips CONTROL characters, never a character set. Tab, newline and
  * carriage return survive because they are layout; C1 (U+0080-U+009F) is
@@ -96,6 +103,32 @@ const CONTROL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
 
 export function safe(value) {
   return typeof value === 'string' ? value.replace(CONTROL_CHARS, '') : value;
+}
+
+/** The bytes `JSON.stringify` leaves raw: DEL and the whole C1 block. */
+const JSON_RAW_CONTROLS = /[\u007F-\u009F]/g;
+
+/**
+ * The `--json` sink. `safe()` is the wrong tool here and the difference is the
+ * point: `--json` exists so a consumer can recover the repo's exact bytes, so
+ * stripping them would defeat the flag rather than guard it. Escaping does
+ * both — a parser decodes the six characters back to the original codepoint,
+ * and a terminal that the operator dumps the output into sees six printable
+ * ASCII characters instead of a CSI introducer.
+ *
+ * The substitution is applied to the SERIALISED text, which is safe because
+ * JSON's own syntax uses no byte in this range: anything matched came out of a
+ * string value, and inside a string value the escape is the canonical spelling
+ * of the same character.
+ *
+ * This does not re-escape C0 — `JSON.stringify` already does that correctly,
+ * verified rather than assumed this time.
+ */
+export function jsonSafe(value) {
+  return JSON.stringify(value, null, 2).replace(
+    JSON_RAW_CONTROLS,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
 }
 
 /**
@@ -152,13 +185,27 @@ export const MANIFEST_CAP = 1_000_000;
  * wrong.
  */
 export function readTarget(path, label = path) {
-  let size;
+  let st;
   try {
-    ({ size } = statSync(path));
+    st = statSync(path);
   } catch (err) {
     process.stderr.write(`todokeeper: cannot stat \`${safe(label)}\` — ${safe(err.message)}\n`);
     return null;
   }
+  // A size cap bounds a FILE, and this is the check that decides it is one.
+  // `statSync` reports size 0 for a character device, a fifo and everything
+  // under /proc, so any of them sails under any cap and then reads without
+  // end — measured against /dev/zero at 3.9GB resident in ten seconds and
+  // still climbing when the timeout killed it. `contained()` stops the usual
+  // way in (a symlink out of the tree); this stops the rest.
+  if (!st.isFile()) {
+    process.stderr.write(
+      `todokeeper: skipping \`${safe(label)}\` — not a regular file. A device or fifo `
+      + 'reports size 0 and then reads without end, so no size cap can bound it.\n',
+    );
+    return null;
+  }
+  const { size } = st;
   if (size > TARGET_CAP) {
     process.stderr.write(
       `todokeeper: skipping \`${safe(label)}\` — ${(size / 1e6).toFixed(1)}MB is over the `
@@ -361,10 +408,13 @@ export function loadConfig(root) {
   // full before any of them is consulted — the 4.8MB config that proved the
   // word-list DoS was itself never the memory problem, but nothing stopped a
   // larger one from being.
-  const { size } = statSync(path);
-  if (size > MANIFEST_CAP) {
+  const st = statSync(path);
+  if (!st.isFile()) {
+    throw new Error('.todokeeper.json is not a regular file; refusing to read it');
+  }
+  if (st.size > MANIFEST_CAP) {
     throw new Error(
-      `.todokeeper.json is ${(size / 1e6).toFixed(1)}MB; the limit is ${MANIFEST_CAP / 1e6}MB. `
+      `.todokeeper.json is ${(st.size / 1e6).toFixed(1)}MB; the limit is ${MANIFEST_CAP / 1e6}MB. `
       + 'This file holds a handful of keys, not data.',
     );
   }
@@ -660,10 +710,21 @@ function declaredDependencies(root) {
   ];
   for (const [file, fields] of manifests) {
     try {
-      const abs = join(root, file);
+      // Containment, not merely a size cap, and these two files were the only
+      // ones in the tool that had neither. `package.json` is git-trackable as
+      // a symlink (mode 120000), so `package.json -> ../outside/evil.json`
+      // ships in a clone and needs no config: measured, an external
+      // `dependencies` key reclassified an in-repo referent as a package and
+      // dropped it out of `dead.mjs`'s report entirely. The read reaches
+      // outside the tree AND changes the finding.
+      const abs = contained(root, join(root, file));
+      if (!abs) continue;
       // Before the read, not inside the catch: an OOM is a FATAL, not an
-      // exception, so this `try` cannot see it.
-      if (statSync(abs).size > MANIFEST_CAP) continue;
+      // exception, so this `try` cannot see it. And `isFile()` before the
+      // size, because size is meaningless for anything else — the same
+      // symlink pointed at /dev/zero stats at 0 and reads for ever.
+      const st = statSync(abs);
+      if (!st.isFile() || st.size > MANIFEST_CAP) continue;
       const json = JSON.parse(readFileSync(abs, 'utf8'));
       for (const field of fields) {
         for (const name of Object.keys(json[field] ?? {})) names.add(name);
