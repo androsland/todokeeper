@@ -176,7 +176,8 @@ run the three scripts against this repo and they should report something sane.
   target costs "several times its size", and 19x is not what a reader takes from
   that. The fix is making `entries()` a generator; it was not bundled with a
   security round because every caller indexes the returned array.
-  (self-review, 2026-08-17)
+  (self-review, 2026-08-17; corroborated Medium — security review round 10,
+  2026-08-17, the only finding it rated above Low)
 
 - **`MAX_FROM` drops the tail, it does not sample.** A referent named by 5,000
   entries reports the first 64 and `+4936 more`. The count is honest and the
@@ -203,6 +204,27 @@ run the three scripts against this repo and they should report something sane.
   DID cross the boundary (83,136 bytes) and `measure.mjs` did not (3,336), so
   the untested half is not the hypothetical half. Deleting `writeStdout` from
   either script still passes the suite. (self-review, 2026-08-17)
+
+- **`writeStdout` cannot reject, so a genuine write failure still exits 0.**
+  The promise has no reject path: any error reaching `process.stdout.write`'s
+  callback is swallowed and the `process.exit(0)` behind it fires anyway. That
+  is deliberate — it reproduces what `console.log` did, so `| head` closing the
+  pipe does not become an unhandled rejection — but it means an `ENOSPC` on a
+  `>` redirect produces a truncated document with a success status and no
+  diagnostic, which is the exact shape of the bug the helper was written to fix.
+  Narrow: the redirect target is the operator's choice and unreachable by a
+  hostile repo, so it sits outside this tool's threat model. The fix is to
+  distinguish EPIPE (swallow, as now) from every other write error (stderr line,
+  non-zero exit). (security review round 10, 2026-08-17)
+
+- **`test/smoke.mjs` builds an `sh -c` command by interpolation, not arguments.**
+  `JSON.stringify` escapes `"` and backslash and leaves `$` and backticks alone,
+  so the quoting is incidental rather than principled. Not exploitable: both
+  interpolated values are internally generated — this repo's own script path and
+  an `mkdtempSync` name — and this file never sees a third-party repo's content.
+  Left because the shape is what matters, and the fix is one line:
+  `sh -c '... "$1" ... "$2"' -- "$dead" "$root"`.
+  (security review round 10, 2026-08-17)
 
 ## Completed
 
