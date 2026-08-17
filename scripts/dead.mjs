@@ -28,7 +28,7 @@ import { readFileSync, statSync } from 'node:fs';
 import {
   loadConfigOrExit, repoRoot, resolveTargets, sections, entries,
   classifyReferent, buildFileIndex, walkFiles, isText, rel, isCompletedHeading,
-  readTarget, safe, jsonSafe,
+  readTarget, safe, jsonSafe, MAX_REFERENTS,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -177,6 +177,9 @@ const index = buildFileIndex(root, config.ignore);
 const seen = new Map();
 
 const unreadTargets = [];
+// The count this script has to bound, because the scan below is one pass over
+// the whole in-budget corpus PER distinct referent. See `MAX_REFERENTS`.
+let droppedReferents = 0;
 
 for (const abs of targets) {
   const file = rel(root, abs);
@@ -205,11 +208,26 @@ for (const abs of targets) {
         if (c.kind === 'prose' || c.kind === 'external') continue;
         if (c.kind === 'ref' || c.kind === 'route') continue;
         const key = `${c.kind}:${c.needle}`;
-        if (!seen.has(key)) seen.set(key, { ...c, from: [] });
+        if (!seen.has(key)) {
+          // The cap is on DISTINCT referents, which is the factor the scan
+          // multiplies by; a referent already collected keeps accruing its
+          // `from` list for free.
+          if (seen.size >= MAX_REFERENTS) { droppedReferents += 1; continue; }
+          seen.set(key, { ...c, from: [] });
+        }
         seen.get(key).from.push({ file, lead: entry.lead });
       }
     }
   }
+}
+
+if (droppedReferents > 0) {
+  process.stderr.write(
+    `todokeeper: stopped collecting at ${MAX_REFERENTS} distinct referents; `
+    + `${droppedReferents} more were not scanned. This scan is one pass over every `
+    + 'file in the read budget PER referent, so the count has to be bounded. '
+    + 'Verdicts below cover the first ' + MAX_REFERENTS + ' only.\n',
+  );
 }
 
 const report = [];
@@ -221,6 +239,12 @@ for (const ref of seen.values()) {
     // `dist/index.html` is not missing; it was never looked at. Excluded by
     // config is a different fact from absent from the repo, and conflating them
     // reports the tool's own configured blind spot as the repo's problem.
+    //
+    // But `ignoredByConfig` splits that bucket again, and the second half is
+    // not a blind spot — it is a suppression. `.todokeeper.json` ships inside
+    // the audited repo, so one commit can delete a file an entry names AND add
+    // its directory to `ignore`; the referent then reads PATH-NOT-SCANNED,
+    // which a human scans past as "out of scope".
     else if (ref.ignored) verdict = 'PATH-NOT-SCANNED';
     report.push({ ...ref, verdict, hits: [] });
     continue;
@@ -253,7 +277,9 @@ for (const ref of seen.values()) {
 }
 
 if (asJson) {
-  console.log(jsonSafe({ root, referents: report, unreadTargets }));
+  console.log(jsonSafe({
+    root, referents: report, unreadTargets, droppedReferents, referentCap: MAX_REFERENTS,
+  }));
   process.exit(0);
 }
 
@@ -284,7 +310,24 @@ for (const key of order) {
   if (!list.length) continue;
   const quiet = key === 'CODE' || key === 'PATH-EXISTS' || key === 'PATH-NOT-SCANNED';
   console.log(`${key} (${list.length}) — ${explain[key]}`);
-  if (quiet) { console.log(''); continue; }
+  if (quiet) {
+    // One exception to quiet, and it is the whole reason `ignoredByConfig`
+    // exists: a directory this tool ignores BY DEFAULT is a blind spot the
+    // operator already knows about, while a directory the SCANNED REPO added to
+    // `ignore` is the audited party choosing what the audit may see. Same
+    // bucket, opposite provenance. Printing the count alone is what lets the
+    // second one pass for the first.
+    const bySuppression = list.filter((r) => r.ignoredByConfig);
+    if (bySuppression.length) {
+      console.log(`  ${bySuppression.length} of these were excluded by this repo's own .todokeeper.json,`);
+      console.log('  not by todokeeper\'s defaults. Check the entry before reading it as out of scope:');
+      for (const r of bySuppression) {
+        console.log(`    \`${safe(r.raw)}\`  — under \`${safe(r.ignoredBy)}\``);
+      }
+    }
+    console.log('');
+    continue;
+  }
   for (const r of list) {
     console.log(`  \`${safe(r.raw)}\``);
     console.log(`    named by: ${r.from.map((f) => `${safe(f.file)} :: ${safe(f.lead.slice(0, 56))}`).join(' | ')}`);

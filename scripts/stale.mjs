@@ -24,7 +24,7 @@ import {
   loadConfigOrExit, repoRoot, resolveTargets, sections, entries,
   lastCommitTouching, lastCommitChangingPhrase, classifyReferent,
   buildFileIndex, rel, daysBetween, isCompletedHeading,
-  readTarget, safe, jsonSafe,
+  readTarget, safe, jsonSafe, MAX_ENTRIES,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -52,6 +52,10 @@ const pathCache = new Map();
 
 const results = [];
 const unreadTargets = [];
+// One `git log -S` child per distinct entry needle, so entry count is a process
+// count. Bounded for the same reason `dead.mjs` bounds referents.
+let entriesSeen = 0;
+let droppedEntries = 0;
 
 for (const abs of targets) {
   const file = rel(root, abs);
@@ -72,6 +76,8 @@ for (const abs of targets) {
     if (completedDepth != null) continue;
 
     for (const entry of entries(sec.body, config.entryStyles)) {
+      entriesSeen += 1;
+      if (entriesSeen > MAX_ENTRIES) { droppedEntries += 1; continue; }
       const phrase = entry.lead;
       // The needle is the raw-bytes form; the lead is the display form. They
       // differ whenever the entry's bold lead wraps across lines.
@@ -95,7 +101,15 @@ for (const abs of targets) {
           // `node_modules/` was excluded by config, and calling it missing
           // would be the tool's own blind spot reported as the repo's fault.
           referents.push({
-            path: c.needle, raw, status: c.ignored ? 'not-scanned' : 'missing', commit: null,
+            path: c.needle,
+            raw,
+            status: c.ignored ? 'not-scanned' : 'missing',
+            // Which side put it out of reach: todokeeper's defaults, or the
+            // audited repo's own `.todokeeper.json`. Same bucket, and only the
+            // second one is the audited party choosing what the audit sees.
+            ignoredBy: c.ignoredBy ?? null,
+            ignoredByConfig: c.ignoredByConfig ?? false,
+            commit: null,
           });
           continue;
         }
@@ -135,9 +149,18 @@ for (const abs of targets) {
   }
 }
 
+if (droppedEntries > 0) {
+  process.stderr.write(
+    `todokeeper: stopped at ${MAX_ENTRIES} entries; ${droppedEntries} more were not dated. `
+    + 'Each entry costs a `git log -S` child process, so the count has to be bounded. '
+    + 'Every bucket below is incomplete by that many entries — a "0 suspect" here does '
+    + 'not mean the file is clean.\n',
+  );
+}
+
 if (asJson) {
   console.log(jsonSafe({
-    root, minDays, entries: results, unreadTargets,
+    root, minDays, entries: results, unreadTargets, droppedEntries, entryCap: MAX_ENTRIES,
   }));
   process.exit(0);
 }
@@ -160,6 +183,26 @@ console.log(`${results.length} live entries across ${targets.length - unreadTarg
 if (unreadTargets.length) {
   console.log(`UNREAD TARGET (${unreadTargets.length}): ${unreadTargets.map(safe).join(', ')}`);
   console.log('No entry from these files reached any bucket below — see stderr for why.\n');
+}
+
+if (droppedEntries > 0) {
+  console.log(`ENTRY CAP HIT — ${droppedEntries} entr${droppedEntries === 1 ? 'y' : 'ies'} past the ${MAX_ENTRIES} limit were not dated.`);
+  console.log('Every count below is short by that many. See stderr.\n');
+}
+
+const suppressed = results.flatMap(
+  (r) => r.referents.filter((x) => x.ignoredByConfig).map((x) => ({ file: r.file, lead: r.lead, ref: x })),
+);
+if (suppressed.length) {
+  console.log(`EXCLUDED BY THIS REPO'S OWN CONFIG (${suppressed.length}) — not by todokeeper's defaults`);
+  console.log('`.todokeeper.json` ships inside the repo being audited, so this bucket is the');
+  console.log('audited party choosing what the audit may see. Read these before treating a');
+  console.log('`not-scanned` referent as out of scope:');
+  for (const s of suppressed) {
+    console.log(`  ${safe(s.file)} :: ${safe(short(s.lead))}`);
+    console.log(`    \`${safe(s.ref.raw)}\` — under \`${safe(s.ref.ignoredBy)}\``);
+  }
+  console.log('');
 }
 
 if (buckets['referent-missing'].length) {

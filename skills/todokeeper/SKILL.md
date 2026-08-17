@@ -57,7 +57,9 @@ entries of at most 64 characters — they hold words, and an unbounded word list
 is a real cost, not a stylistic one.
 
 **No key takes a regex** — `.todokeeper.json` ships inside the repo being
-scanned, and a regex from an untrusted file can hang the run unstoppably.
+scanned, and a regex from an untrusted file can burn the whole run inside V8
+with no JS timer, signal handler or abort able to fire. (Ctrl-C still kills the
+process; this line used to say "unstoppably", which was measured and is wrong.)
 `completedHeadings` holds literal words matched at the *start* of a heading
 (optionally after `recently` / `previously` / `already`). `entryStyles` is any
 of `bullet`, `numbered`, `bold-lead`; a blockquote prefix is stripped before the
@@ -209,11 +211,16 @@ unlike a skipped target.
 
 **Config takes no regex, so entry and heading matching is only as flexible as
 the lists allow.** A pattern from a file that ships inside the scanned repo can
-hang the run with nothing able to interrupt it, and screening patterns by shape
-does not work — a 34-character pattern with no groups and no alternation defeats
-it. So `entryStyles` names three shapes and `completedHeadings` holds literal
-words. A repo that marks entries some fourth way cannot be configured into
-working; it needs a new style added to `ENTRY_STYLES` in `lib.mjs`.
+burn an unbounded run inside V8 with nothing *in Node* able to interrupt it —
+the event loop is blocked, so no timer, signal handler or abort runs — and
+screening patterns by shape does not work: a 34-character pattern with no groups
+and no alternation defeats it. So `entryStyles` names three shapes and
+`completedHeadings` holds literal words. A repo that marks entries some fourth
+way cannot be configured into working; it needs a new style added to
+`ENTRY_STYLES` in `lib.mjs`. **What that costs is a wasted run, not a wedged
+machine** — measured, an OS SIGINT terminates a V8-blocked process in 4ms, so
+Ctrl-C works. The earlier wording here claimed nothing could interrupt it at
+all, which overstated the harm; the ban still stands on the wasted run.
 
 **A heading that opens with a completed word is read as an archive**, even when
 it means something else — `## Done criteria` counts as completed. Anchoring
@@ -238,6 +245,27 @@ skipped it is named on stderr and again in the report, and every figure —
 total size, completed mass, the threshold verdict — is incomplete by that file.
 Do not read a report with an `UNREAD` line as a measurement. The cap bounds one
 file, not the set: several targets each just under it still sum past memory.
+
+**Entries and distinct referents are capped at 5,000 each, and the cap bounds
+the count rather than the cost.** These are the two dimensions that multiply
+against the byte caps instead of sitting beside them: `dead.mjs` scans every
+file in its 256MB budget once *per* distinct referent, and `stale.mjs` spawns a
+`git log -S` child per distinct entry. Measured at 9.03e-5 s per referent per
+MB, a `TODOS.md` under every existing cap could buy roughly 4.2 hours of CPU.
+5,000 is 4.1× the largest referent count and 25.6× the largest entry count in
+any real file on hand. **Hitting it truncates the sweep**, which is announced on
+stderr and in the report — a `0 suspect` or an `ABSENT` from a truncated run is
+not a finding. And the cap cannot tell a hostile file from a genuinely large
+one; a real 6,000-entry file is cut exactly like an attack.
+
+**`PATH-NOT-SCANNED` / `not-scanned` covers two opposite facts, and the reports
+now separate them.** `.todokeeper.json` ships inside the audited repo, so the
+same commit that deletes a file an entry names can add that file's directory to
+`ignore` — turning `PATH-MISSING` into `PATH-NOT-SCANNED`, which reads as "out
+of scope". Referents excluded by a directory that is not one of todokeeper's own
+defaults are now listed by name. This does **not** detect suppression and cannot
+know intent: it fires the same way on a repo that legitimately ignores its own
+`fixtures/`. It only stops the two cases printing identically.
 
 **Control characters are stripped from the human-readable reports, so what you
 read is not byte-identical to the repo.** Headings, entry leads, source lines

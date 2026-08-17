@@ -175,6 +175,51 @@ export const TARGET_CAP = 64_000_000;
 export const MANIFEST_CAP = 1_000_000;
 
 /**
+ * The two COUNT caps. Every byte cap above bounds one file; these bound the two
+ * dimensions that MULTIPLY against a byte cap rather than sitting beside it,
+ * and they were the only combinatorial costs in this tool that nothing capped.
+ *
+ * `dead.mjs` scans the whole in-budget corpus once per distinct symbol
+ * referent, so its cost is referents × scanned-bytes. Measured here, linear in
+ * both factors: at 18MB of corpus, 100/200/400/800 referents cost
+ * 0.25/0.40/0.70/1.36s; at 400 referents, 10/20/40/80MB cost
+ * 0.36/0.71/1.41/2.86s. That is 9.03e-5 s per referent per MB — a constant
+ * that predicted 8.5s for 5,000 referents against 18MB where the measurement
+ * was 8.13s. Both factors passed every cap already in this file and their
+ * PRODUCT did not: a target at `TARGET_CAP` holds roughly 655,000 referents,
+ * which against a corpus at `dead.mjs`'s 256MB budget is about 4.2 hours.
+ *
+ * `stale.mjs` spawns one `git log -S` child per distinct entry needle, so its
+ * cost is linear in entry count and was unbounded the same way.
+ *
+ * 5,000 comes from measurement rather than taste, and the two dimensions were
+ * measured over overlapping-but-different sets of repos, so they are quoted
+ * separately rather than paired:
+ *  - Referents, six repos: 1,219 (a larger repo, a 318KB target) then 875, 574, 490,
+ *    229, 54.
+ *  - Entries, six repos: 195 (another repo) then 188, 113, 97, 58, 4. The
+ *    largest file by bytes is NOT the one with the most entries.
+ * So the cap sits at 4.1× the largest referent count and 25.6× the largest
+ * entry count observed anywhere on this machine.
+ *
+ * Three things it deliberately does NOT do, written here so a cap is not read
+ * as a fix:
+ *  - It bounds the COUNT, not the cost. 5,000 referents against a 256MB corpus
+ *    is still ~115 seconds, and a `stale.mjs` run that actually reaches the
+ *    entry cap measured 39 seconds on a one-commit repo — more on real history,
+ *    since each child's own cost grows with the log it searches. Bounded is not
+ *    fast, and neither number is a promise.
+ *  - It cannot tell a hostile 5,000 from an honest 5,000. A genuinely large
+ *    file is truncated exactly like an attack; the announcement is the whole
+ *    remedy, which is why both consumers print it on stderr AND carry it in the
+ *    report rather than only one of the two.
+ *  - It says nothing about the headings dimension, which multiplies against
+ *    `completedHeadings` instead and has its own standing entry in TODOS.md.
+ */
+export const MAX_REFERENTS = 5_000;
+export const MAX_ENTRIES = 5_000;
+
+/**
  * Read a whole file this tool does not control, refusing one large enough to
  * end the process instead of the read.
  *
@@ -808,12 +853,19 @@ export function classifyReferent(raw, index = null) {
   }
   if (/[*?]/.test(stripped) && stripped.includes('/')) {
     const dir = stripped.slice(0, stripped.lastIndexOf('/'));
+    const globIgnoredBy = ignoringSegment(dir, index);
     return {
       kind: 'glob',
       needle: stripped,
       dir,
       resolved: index && index.dirs.has(dir) ? dir : null,
-      ignored: isIgnoredPath(dir, index),
+      ignored: globIgnoredBy !== null,
+      ignoredBy: globIgnoredBy,
+      // Same provenance split as the path branch below: a glob under a
+      // directory the SCANNED REPO chose to ignore is the audited party
+      // deciding what the audit may see, and it lands in the same quiet
+      // bucket as a directory todokeeper skips by default.
+      ignoredByConfig: globIgnoredBy !== null && !DEFAULTS.ignore.includes(globIgnoredBy),
       raw,
     };
   }
@@ -853,18 +905,39 @@ export function classifyReferent(raw, index = null) {
   if (stripped.includes('/') || looksLikeFile) {
     // A path the index cannot see because it was never scanned is not missing —
     // build output and vendored trees are excluded by config, not by absence.
+    const ignoredBy = ignoringSegment(stripped, index);
     return {
-      kind: 'path', needle: stripped, resolved: null, ignored: isIgnoredPath(stripped, index), raw,
+      kind: 'path',
+      needle: stripped,
+      resolved: null,
+      ignored: ignoredBy !== null,
+      ignoredBy,
+      // Whether the exclusion came from this tool's own defaults or from the
+      // scanned repo's `.todokeeper.json`. See `PATH-NOT-SCANNED` in dead.mjs.
+      ignoredByConfig: ignoredBy !== null && !DEFAULTS.ignore.includes(ignoredBy),
+      raw,
     };
   }
   return { kind: 'symbol', needle: stripped.replace(/\(\)$/, ''), raw };
 }
 
-/** Does this path sit under a directory the scan was told to skip? */
-function isIgnoredPath(path, index) {
-  if (!index || !index.ignore) return false;
+/**
+ * Which directory the scan was told to skip put this path out of reach, or
+ * `null` if none did.
+ *
+ * This returns the SEGMENT rather than a boolean because the segment is the
+ * only thing that distinguishes the two very different facts that both land in
+ * `PATH-NOT-SCANNED`: "this is build output, todokeeper never looks there" and
+ * "the scanned repo's own config excluded exactly the directory an entry names".
+ * `.todokeeper.json` ships inside the repo being audited, so the same commit
+ * that deletes a file an entry names can add that file's directory to `ignore`
+ * and turn a `PATH-MISSING` into a `PATH-NOT-SCANNED` — measured, and it is not
+ * a fabricated clean result but it is a real finding wearing a neutral label.
+ */
+function ignoringSegment(path, index) {
+  if (!index || !index.ignore) return null;
   const first = path.split('/')[0];
-  return index.ignore.has(first);
+  return index.ignore.has(first) ? first : null;
 }
 
 /* ------------------------------------------------------------------ commit */

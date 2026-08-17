@@ -134,6 +134,43 @@ run the three scripts against this repo and they should report something sane.
 
 ## Completed
 
+- **Three findings: two counts that multiply were unbounded, one bucket hid its
+  own provenance, and the docs made a claim that measured false.**
+  (a) *Unbounded cost.* `dead.mjs` makes one pass over its whole in-budget
+  corpus **per distinct referent**, so its cost is `referents × scanned-bytes` —
+  a product, where every existing cap bounds a single file. Measured linear in
+  both factors: at 18MB, 100/200/400/800 referents cost 0.25/0.40/0.70/1.36s; at
+  400 referents, 10/20/40/80MB cost 0.36/0.71/1.41/2.86s. That is **9.03e-5 s
+  per referent per MB**, a constant that predicted 8.5s for a 5,000×18MB case
+  where the measurement was 8.13s. A target at `TARGET_CAP` holds ~655,000
+  referents, which against `dead.mjs`'s 256MB budget is **~4.2 hours**.
+  `stale.mjs` spawns one `git log -S` child per entry and was unbounded the same
+  way. `MAX_REFERENTS`/`MAX_ENTRIES` now sit at 5,000, chosen from measurement
+  across six real repos — largest referent count 1,219 (a larger repo), largest entry
+  count 195 (another repo), and **they are different repos**, so the cap is
+  4.1× and 25.6× the observed maxima and cannot fire on anything on this
+  machine. Both consumers announce truncation on stderr *and* in the report.
+  (b) *Provenance.* `.todokeeper.json` ships inside the repo being audited, so
+  `ignore` is attacker-controlled: one commit can delete a file an entry names
+  and add its directory to `ignore`, flipping `PATH-MISSING` into
+  `PATH-NOT-SCANNED` — a quiet bucket that prints a count and no detail.
+  Reproduced exactly. `ignoringSegment` now returns the segment rather than a
+  boolean, and `ignoredBy`/`ignoredByConfig` let both reports list the referents
+  the audited repo's own config excluded, separately from todokeeper's defaults.
+  This does not detect suppression and cannot know intent — it fires identically
+  on a repo that legitimately ignores its own `fixtures/`.
+  (c) *A false claim in the shipped docs.* README and SKILL.md both said a
+  hostile regex could hang the run "unstoppably" / with "no way to interrupt
+  it". Measured false: `kill -INT` terminates a V8-blocked Node process in
+  **9ms** on a synchronous scan loop and **4ms** on catastrophic backtracking,
+  because Node's default SIGINT action is the OS-level terminate and does not
+  need the event loop. The precise truth is that nothing *in Node* can interrupt
+  it — no timer, signal handler or abort runs on a blocked loop — so the harm is
+  a wasted run, not a wedged machine. The regex ban stands on that; the sentence
+  defending it did not. Third consecutive round in which a claim this repo made
+  about its own guards was falsified by testing it.
+  (security review round 7, 2026-08-17)
+
 - **Two claims about the guards were false, and a review round proved both.**
   (a) *`--json` was never affected — `JSON.stringify` escapes control bytes on
   its own.* It escapes **C0 and nothing else**. Measured: ESC and NUL come out

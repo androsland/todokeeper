@@ -161,14 +161,20 @@ throughout. Each guard, and what it does not cover:
   deliberately symlinks `TODOS.md` to a shared file elsewhere will not be
   measured. Run todokeeper where the real file lives instead.
 - **No regex is accepted from config, which is why the config knobs are lists.**
-  A regex from an untrusted file can hang the process with no way to interrupt
-  it: `^.*.*.*.*.*.*.*.*.*.*.*.*ZZZZ$` is 34 characters, has no groups and no
+  A regex from an untrusted file can burn an unbounded run inside V8 with
+  nothing *in Node* able to interrupt it — a blocked event loop runs no timer,
+  no signal handler and no abort:
+  `^.*.*.*.*.*.*.*.*.*.*.*.*ZZZZ$` is 34 characters, has no groups and no
   alternation, and runs past eight seconds against an ordinary bullet line,
   because the pattern is tested against every line of the file. An earlier
   version screened patterns for the textbook `(a+)+` shape; that example passed
   the screen, and so would the next one, because recognising catastrophic
   backtracking from pattern shape cannot be done in general and V8 offers no
-  timeout. **The cost is real:** `entryStyles` covers only the three entry
+  timeout. **What it costs is a wasted run, not a wedged machine.** This bullet
+  used to say "no way to interrupt it", full stop, and that was wrong: measured,
+  an OS SIGINT terminates a V8-blocked Node process in 4ms, so Ctrl-C works. The
+  ban stands on the wasted run, which is harm enough — it just is not the harm
+  that was written here. **The cost is real:** `entryStyles` covers only the three entry
   shapes it names, so a deferred-work file that marks entries some other way is
   not parseable here at all — that is a missing style to add, not a config to
   write.
@@ -182,6 +188,47 @@ throughout. Each guard, and what it does not cover:
   item cap is only a second wall. `targets` and `ignore` are deliberately left
   unbounded — one resolves each entry once, the other becomes a Set, and neither
   multiplies against anything.
+- **Entries and distinct referents are capped at 5,000 each, because those two
+  counts multiply against the byte caps rather than sitting beside them.**
+  `dead.mjs` makes one pass over every file in its 256MB read budget *per*
+  distinct referent, so its cost is `referents × scanned-bytes`. Measured here,
+  linear in both: at 18MB of corpus, 100/200/400/800 referents cost
+  0.25/0.40/0.70/1.36s; at 400 referents, 10/20/40/80MB cost
+  0.36/0.71/1.41/2.86s — a constant of 9.03e-5 s per referent per MB that
+  predicted 8.5s for 5,000 referents against 18MB where the measurement was
+  8.13s. Both factors cleared every cap that already existed and their product
+  did not: a target at the 64MB `TARGET_CAP` holds roughly **655,000** referents,
+  which against a 256MB corpus is about **4.2 hours** of pegged CPU from a
+  `TODOS.md` that looks entirely ordinary. `stale.mjs` has the same shape by a
+  different mechanism — one `git log -S` child process per distinct entry needle,
+  with nothing bounding entry count. The cap is set from measurement, not taste:
+  across the six largest real deferred-work files on hand the most any one holds
+  is **1,219** distinct referents and **195** entries, so 5,000 is 4.1× and 25.6×
+  the observed maxima. Hitting it is announced on stderr **and** in the report,
+  because a truncated scan that printed like a complete one would call a live
+  referent `ABSENT`.
+- **The cap bounds the count, not the cost, and cannot tell hostile from large.**
+  5,000 referents against a 256MB corpus is still ~115 seconds and nothing here
+  shortens that, and a `stale.mjs` run that actually reaches the entry cap
+  measured **39 seconds** against a one-commit repo — more against real history,
+  because each `git log -S` child's own cost grows with the log it searches.
+  Bounded is not fast, and neither figure is a promise. A genuinely huge
+  deferred-work file is truncated in exactly the way an attack is, and the
+  announcement is the entire remedy. It also does
+  nothing for the headings dimension, which multiplies against `completedHeadings`
+  instead and has its own standing entry in `TODOS.md`.
+- **`ignore` is attacker-controlled, and a `PATH-NOT-SCANNED` verdict now says
+  which side put it there.** `.todokeeper.json` ships inside the repo being
+  audited, so one commit can delete a file an entry names *and* add that file's
+  directory to `ignore`; the referent then reports `PATH-NOT-SCANNED` instead of
+  `PATH-MISSING` — verified, not theorised. That is an honestly-labelled bucket,
+  not a fabricated clean result, but `PATH-NOT-SCANNED` reads as "out of scope"
+  and a reader scans past it. So a referent excluded by a directory that is *not*
+  one of todokeeper's own defaults is now listed by name in both `dead.mjs` and
+  `stale.mjs`, under the heading that says the audited repo's config put it
+  there. **This does not detect the suppression** — it cannot know intent, and it
+  fires identically on a repo that legitimately ignores its own `fixtures/`. It
+  only refuses to let the two cases print the same way.
 - **That cap counts code units, not cost, so the real ceiling is a range.** A
   full 100 × 64 list against the same 5,000 headings costs 14ms in ASCII, 20ms
   in German, ~71ms in Greek or Cyrillic, 143ms in astral characters, and
