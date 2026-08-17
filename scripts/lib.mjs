@@ -166,6 +166,42 @@ export function jsonSafe(value) {
 }
 
 /**
+ * Write one payload to stdout and resolve only once it has actually left.
+ *
+ * `console.log(big); process.exit(0)` truncates on a pipe. Node's stdout is
+ * synchronous for a file or a TTY and ASYNCHRONOUS for a pipe, and
+ * `process.exit()` discards whatever is still buffered — so the consumer gets
+ * a prefix, the exit status is 0, and nothing anywhere reports an error.
+ * Measured on a real 439-file repo against the build that had it:
+ * `dead.mjs --json | cat` delivered exactly 65,536 bytes of a 596,029-byte
+ * document — one pipe buffer — and `stale.mjs --json | cat` the same 65,536 of
+ * 83,136. Both were invalid JSON, both exited 0. Redirecting to a FILE gave
+ * the whole document, which is precisely why this survived nine review rounds:
+ * every hand-check had used `>`.
+ *
+ * The `await` at the call site matters as much as the flush. It suspends the
+ * module, so the text report below the `--json` block does not run before the
+ * exit lands. Resolving on error rather than rejecting keeps `| head` from
+ * turning an EPIPE into an unhandled rejection, matching what `console.log`
+ * already did.
+ *
+ * Non-goals, so this is not read as more than it is:
+ *  - It does NOT make `console.log` safe. Every other call site in these
+ *    scripts is still async-on-a-pipe; they are safe only because a text
+ *    report ends by falling off the end of the module rather than by
+ *    `process.exit`, and nothing enforces that a future one will.
+ *  - It bounds nothing. A report too large to be useful is still emitted in
+ *    full; see `MAX_ENTRIES` / `MAX_REFERENTS` / `MAX_FROM` for the caps.
+ *  - It says nothing about stderr, which every script still writes through
+ *    `console.error` and which has the same shape — smaller payloads only.
+ */
+export function writeStdout(text) {
+  return new Promise((resolve) => {
+    process.stdout.write(text, () => resolve());
+  });
+}
+
+/**
  * Bytes above which a file is not read at all.
  *
  * `readFileSync(path, 'utf8')` has no ceiling of its own below V8's 537MB
@@ -255,9 +291,42 @@ export const MANIFEST_CAP = 1_000_000;
  *    report rather than only one of the two.
  *  - It says nothing about the headings dimension, which multiplies against
  *    `completedHeadings` instead and has its own standing entry in TODOS.md.
+ *  - `MAX_ENTRIES` shipped in `stale.mjs` and NOT in `dead.mjs`, which never
+ *    imported it. The asymmetry was invisible for two rounds because
+ *    `MAX_REFERENTS` reads like the whole cap for that script, and it is not:
+ *    it bounds DISTINCT referents, while `from` accrues one record per
+ *    (entry, referent) pair for referents already admitted. Measured on a
+ *    63.8MB target — inside `TARGET_CAP` — holding 2,163,704 entries that each
+ *    name the same one missing file: 7.07s, 1.41GB RSS, and a single stdout
+ *    line of 50,817,797 bytes, for ONE referent. See `MAX_FROM`.
  */
 export const MAX_REFERENTS = 5_000;
 export const MAX_ENTRIES = 5_000;
+
+/**
+ * The provenance cap, and the reason it is separate from the two above.
+ *
+ * `referentsIn` returns a Set, so one entry naming the same referent a million
+ * times yields one record — that shape was tested and does not reproduce. What
+ * accrues is one record per (entry, distinct referent) pair, so the growth is
+ * across entries, and `MAX_ENTRIES` alone does not bound it: entry 1 may name
+ * 5,000 distinct referents and fill `seen`, after which each of the remaining
+ * 4,999 entries pushes 5,000 more records against keys that are already there.
+ * The only thing standing between that and the operator's terminal was
+ * `TARGET_CAP`, which is a byte cap and admits ~5.3M pairs.
+ *
+ * 64 is 5.8x the largest `from` list measured on this machine: 11 (another repo),
+ * then 4 (todokeeper), 1, 1. Storage is capped rather than display truncated,
+ * so a repo below the cap prints byte-identically to before — all four
+ * measured repos do.
+ *
+ * What it does NOT do: it does not bound the report's total size, since
+ * `MAX_REFERENTS` x `MAX_FROM` is still ~320,000 records; it drops the tail
+ * rather than sampling, so the entries it hides are the LAST ones to name a
+ * referent and not a representative set; and it says nothing about how many
+ * referents a single entry may name, which is bounded only by bytes.
+ */
+export const MAX_FROM = 64;
 
 /**
  * Read a whole file this tool does not control, refusing one large enough to

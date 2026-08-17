@@ -28,7 +28,7 @@ import { readFileSync, statSync } from 'node:fs';
 import {
   loadConfigOrExit, repoRoot, resolveTargets, sections, entries,
   classifyReferent, buildFileIndex, walkFiles, isText, rel, isCompletedHeading,
-  readTarget, safeField, jsonSafe, MAX_REFERENTS,
+  readTarget, safeField, jsonSafe, writeStdout, MAX_REFERENTS, MAX_ENTRIES, MAX_FROM,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -181,6 +181,13 @@ const unreadTargets = [];
 // The count this script has to bound, because the scan below is one pass over
 // the whole in-budget corpus PER distinct referent. See `MAX_REFERENTS`.
 let droppedReferents = 0;
+// The two `stale.mjs` had and this script did not. `MAX_REFERENTS` bounds
+// DISTINCT referents and reads like the whole cap; it is not. Entries were
+// uncounted here, and each one pushes a provenance record per referent it
+// names — including referents already admitted, which no cap touched.
+let entriesSeen = 0;
+let droppedEntries = 0;
+let droppedFrom = 0;
 
 for (const abs of targets) {
   const file = rel(root, abs);
@@ -200,6 +207,8 @@ for (const abs of targets) {
     if (completedDepth != null) continue;
 
     for (const entry of entries(sec.body, config.entryStyles)) {
+      entriesSeen += 1;
+      if (entriesSeen > MAX_ENTRIES) { droppedEntries += 1; continue; }
       for (const raw of entry.referents) {
         // Two guards on one cost the cap did not bound. `MAX_REFERENTS`
         // gates INSERTION into `seen`, but classification runs first and is
@@ -240,13 +249,19 @@ for (const abs of targets) {
         if (c.kind === 'ref' || c.kind === 'route') continue;
         const key = `${c.kind}:${c.needle}`;
         if (!seen.has(key)) {
-          // The cap is on DISTINCT referents, which is the factor the scan
-          // multiplies by; a referent already collected keeps accruing its
-          // `from` list for free.
+          // `MAX_REFERENTS` bounds the factor the SCAN multiplies by. It does
+          // not bound provenance: a referent already collected used to accrue
+          // its `from` list without limit, which is how one referent named by
+          // 2.16M entries reached a 50MB stdout line. `MAX_FROM` bounds that
+          // list; `fromTotal` keeps the true count, so the report can say the
+          // referent is named 2.16M times without holding 2.16M records.
           if (seen.size >= MAX_REFERENTS) { droppedReferents += 1; continue; }
-          seen.set(key, { ...c, from: [] });
+          seen.set(key, { ...c, from: [], fromTotal: 0 });
         }
-        seen.get(key).from.push({ file, lead: entry.lead });
+        const rec = seen.get(key);
+        rec.fromTotal += 1;
+        if (rec.from.length < MAX_FROM) rec.from.push({ file, lead: entry.lead });
+        else droppedFrom += 1;
       }
     }
   }
@@ -258,6 +273,20 @@ if (droppedReferents > 0) {
     + `${droppedReferents} more were not scanned. This scan is one pass over every `
     + 'file in the read budget PER referent, so the count has to be bounded. '
     + 'Verdicts below cover the first ' + MAX_REFERENTS + ' only.\n',
+  );
+}
+
+if (droppedEntries > 0) {
+  process.stderr.write(
+    `todokeeper: stopped at ${MAX_ENTRIES} entries; ${droppedEntries} more were not read. `
+    + 'Referents named only by those entries are missing from the verdicts below.\n',
+  );
+}
+
+if (droppedFrom > 0) {
+  process.stderr.write(
+    `todokeeper: ${droppedFrom} provenance record(s) past the ${MAX_FROM}-per-referent limit were `
+    + 'dropped. Verdicts are unaffected — this only shortens the `named by` list.\n',
   );
 }
 
@@ -308,9 +337,17 @@ for (const ref of seen.values()) {
 }
 
 if (asJson) {
-  console.log(jsonSafe({
-    root, referents: report, unreadTargets, droppedReferents, referentCap: MAX_REFERENTS,
-  }));
+  await writeStdout(`${jsonSafe({
+    root,
+    referents: report,
+    unreadTargets,
+    droppedReferents,
+    referentCap: MAX_REFERENTS,
+    droppedEntries,
+    entryCap: MAX_ENTRIES,
+    droppedFrom,
+    fromCap: MAX_FROM,
+  })}\n`);
   process.exit(0);
 }
 
@@ -361,9 +398,17 @@ for (const key of order) {
   }
   for (const r of list) {
     console.log(`  \`${safeField(r.raw)}\``);
-    console.log(`    named by: ${r.from.map((f) => `${safeField(f.file)} :: ${safeField(f.lead.slice(0, 56))}`).join(' | ')}`);
+    const named = r.from.map((f) => `${safeField(f.file)} :: ${safeField(f.lead.slice(0, 56))}`).join(' | ');
+    const more = r.fromTotal > r.from.length ? ` | +${r.fromTotal - r.from.length} more` : '';
+    console.log(`    named by: ${named}${more}`);
     for (const h of r.hits) console.log(`    ${safeField(h.path)}:${h.line}  ${safeField(h.text)}`);
   }
+  console.log('');
+}
+
+if (droppedEntries > 0) {
+  console.log(`ENTRY CAP HIT — ${droppedEntries} entr${droppedEntries === 1 ? 'y' : 'ies'} past the ${MAX_ENTRIES} limit were not read.`);
+  console.log('Referents named only by those entries are absent from this report entirely.');
   console.log('');
 }
 

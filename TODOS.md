@@ -166,7 +166,80 @@ run the three scripts against this repo and they should report something sane.
   never run outside a synthetic test.
   (2026-08-17)
 
+- **`MAX_ENTRIES` caps what is PROCESSED, never what is MATERIALISED.**
+  `entries()` is eager — it does `body.split('\n')` and builds the whole array
+  before the caller sees the first element — so both `dead.mjs` and `stale.mjs`
+  allocate every entry in the file and then decline to process the ones past the
+  cap. Measured on a 63.8MB target holding 2,163,704 entries, which is INSIDE
+  `TARGET_CAP` and therefore admitted: peak RSS 1.24GB after the caps landed,
+  roughly 19x the file. The skip message on `TARGET_CAP` tells the operator a
+  target costs "several times its size", and 19x is not what a reader takes from
+  that. The fix is making `entries()` a generator; it was not bundled with a
+  security round because every caller indexes the returned array.
+  (self-review, 2026-08-17)
+
+- **`MAX_FROM` drops the tail, it does not sample.** A referent named by 5,000
+  entries reports the first 64 and `+4936 more`. The count is honest and the
+  selection is not representative: the 64 shown are the 64 that parsed first,
+  which on a file ordered by topic means one section's worth. An operator
+  chasing where a referent came from gets a biased slice with no marker saying
+  so beyond the remainder count. Reservoir-sampling the list would fix the bias
+  and cost the stable ordering that makes two runs diffable.
+  (self-review, 2026-08-17)
+
+- **`writeStdout` is a convention at two sinks, and nothing enforces it.**
+  Identical shape to the `safeField` entry above. The `--json` sinks in all
+  three scripts now flush before `process.exit`, but every other `console.log`
+  is still async-on-a-pipe and safe only because a text report ends by falling
+  off the end of the module. A future `process.exit()` added after any of them
+  reintroduces the truncation, silently and with exit status 0. No lint rule,
+  no wrapper, no test outside the one `dead.mjs` case.
+  (self-review, 2026-08-17)
+
+- **The pipe regression check covers `dead.mjs` only.** `stale.mjs` and
+  `measure.mjs` carry the same pattern and are not exercised: pushing
+  `stale.mjs` past 64KB needs ~400 entries at two `git log` spawns each, which
+  is a benchmark rather than a smoke test. On a real 439-file repo `stale.mjs`
+  DID cross the boundary (83,136 bytes) and `measure.mjs` did not (3,336), so
+  the untested half is not the hypothetical half. Deleting `writeStdout` from
+  either script still passes the suite. (self-review, 2026-08-17)
+
 ## Completed
+
+- **One High finding, and proving it uncovered a second bug that nine rounds of
+  review had read straight past.** (1) *`dead.mjs` never imported `MAX_ENTRIES`.*
+  `stale.mjs` did; the asymmetry stayed invisible for two rounds because
+  `MAX_REFERENTS` reads like the whole cap and is not — it bounds DISTINCT
+  referents, while the per-referent `from` provenance array accrued one record
+  per (entry, referent) pair. The reviewer's stated mechanism was one entry
+  repeating a referent; measured, that gives `from=1` in 0.25s, because
+  `referentsIn` returns a Set and referents dedupe within an entry. The real
+  vector is across entries. Reproduced on a 63.8MB target — inside `TARGET_CAP`,
+  admitted, 2,163,704 entries each naming the same one missing file: 7.07s,
+  1.41GB RSS, and a SINGLE stdout line of 50,817,797 bytes for ONE referent.
+  Fixed with `MAX_ENTRIES` in the entry loop (parity with `stale.mjs`) and a new
+  `MAX_FROM = 64` bounding the list while `fromTotal` keeps the true count —
+  5.8x the largest `from` measured across four real repos (11, 4, 1, 1). Same
+  input after: 4.59s, 1.24GB RSS, longest line 1,230 bytes, both caps announced
+  on stderr and in the report. (2) *`console.log` followed by `process.exit(0)`
+  truncates on a PIPE.* Found while proving (1): the cap-removal proof failed as
+  a `JSON.parse` SyntaxError instead of clean check failures, and chasing that
+  showed the child exiting 0 with a partial document and no error anywhere.
+  Node's stdout is synchronous for a file or TTY and ASYNCHRONOUS for a pipe, so
+  `process.exit()` discards the buffer. On a real 439-file repo,
+  `dead.mjs --json | cat` delivered exactly 65,536 bytes — one pipe buffer — of a
+  596,029-byte document, and `stale.mjs --json | cat` the same 65,536 of 83,136;
+  both invalid JSON, both exit 0. Redirecting to a FILE gave the whole document,
+  which is why nine rounds missed it: every hand-check had used `>`. Raising
+  `maxBuffer` to 64MB changed nothing — it was never a `maxBuffer` problem. All
+  three `--json` sinks now `await writeStdout(...)`, where the await matters as
+  much as the flush: it suspends the module so the text report cannot run before
+  the exit. After: pipe and file byte counts match on all three scripts across
+  three real repos, all valid JSON. A new smoke phase pipes a 139KB fixture
+  through `cat` and asserts parse, byte-equality and referent count, with a
+  precondition check that the fixture actually exceeds 64KiB; reverting the fix
+  makes it fail at exactly 65,536. Suite 77 -> 80 checks, 0.91s.
+  (security review round 9, 2026-08-17)
 
 - **Six findings, and three of them were bypasses of guards this same repo had
   just installed.** (1) *A suppression check disagreed with the walk it was

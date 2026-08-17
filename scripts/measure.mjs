@@ -21,7 +21,7 @@
 
 import {
   loadConfigOrExit, repoRoot, resolveTargets, sections, entries, rel, isCompletedHeading,
-  readTarget, safeField, jsonSafe,
+  readTarget, safeField, jsonSafe, writeStdout,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -34,7 +34,7 @@ const targets = resolveTargets(root, config);
 
 if (targets.length === 0) {
   const msg = `todokeeper: no deferred-work file found. Looked for: ${config.targets.map(safeField).join(', ')}`;
-  if (asJson) console.log(jsonSafe({ error: msg, targets: config.targets }));
+  if (asJson) await writeStdout(`${jsonSafe({ error: msg, targets: config.targets })}\n`);
   else console.error(msg);
   process.exit(2);
 }
@@ -130,7 +130,7 @@ const verdict = {
 };
 
 if (asJson) {
-  console.log(jsonSafe({ root, config: config._source, files, verdict }));
+  await writeStdout(`${jsonSafe({ root, config: config._source, files, verdict })}\n`);
   process.exit(0);
 }
 

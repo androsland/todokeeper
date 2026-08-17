@@ -47,7 +47,10 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { DEFAULTS, classifyReferent, buildFileIndex, loadConfig } from '../scripts/lib.mjs';
+import {
+  DEFAULTS, classifyReferent, buildFileIndex, loadConfig,
+  MAX_ENTRIES as DEAD_ENTRY_CAP, MAX_FROM as DEAD_FROM_CAP,
+} from '../scripts/lib.mjs';
 
 const SCRIPTS = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts');
 
@@ -289,6 +292,137 @@ function testNoControlBytes() {
   }
 }
 
+// ---------------------------------------------- 6. the two counts that had no test
+
+/**
+ * `MAX_ENTRIES` and `MAX_FROM` in `dead.mjs`, exercised rather than trusted.
+ *
+ * The other caps are deliberately untested because reaching them costs 8.2s and
+ * 39s, which is a benchmark rather than a smoke test. These two are different:
+ * one distinct referent named by 5,001 entries hits both, and the whole run
+ * takes ~70ms, because `dead.mjs`'s expensive dimension is DISTINCT referents
+ * and this fixture has one.
+ *
+ * That cheapness is exactly why the gap survived two rounds. `dead.mjs` never
+ * imported `MAX_ENTRIES` at all while `stale.mjs` did, and nothing here would
+ * have noticed: 2,163,704 entries naming one missing file printed a single
+ * 50,817,797-byte stdout line at 1.41GB RSS, from a target inside `TARGET_CAP`.
+ *
+ * What this does NOT cover: `MAX_REFERENTS` in either script, `MAX_ENTRIES` in
+ * `stale.mjs`, and every byte cap. Deleting any of those still passes here.
+ */
+function testCounts() {
+  const root = mkdtempSync(join(tmpdir(), 'todokeeper-caps-'));
+  try {
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, 'src', 'real.ts'), 'export const a = 1;\n');
+    const lines = ['# TODOS', '', '## Open', ''];
+    // A MISSING path on purpose: PATH-EXISTS is one of the quiet verdicts, and
+    // the quiet branch prints no `named by` line at all, so a resolving referent
+    // cannot exercise the provenance remainder.
+    for (let i = 0; i <= DEAD_ENTRY_CAP; i += 1) lines.push(`- **E${i}.** \`src/gone.ts\``);
+    writeFileSync(join(root, 'TODOS.md'), `${lines.join('\n')}\n`);
+
+    const out = execFileSync('node', [join(SCRIPTS, 'dead.mjs'), '--root', root, '--json'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const j = JSON.parse(out);
+
+    check('dead.mjs drops the entry past MAX_ENTRIES',
+      j.droppedEntries === 1 && j.entryCap === DEAD_ENTRY_CAP,
+      `droppedEntries=${j.droppedEntries} entryCap=${j.entryCap}`);
+
+    const ref = j.referents.find((r) => r.raw === 'src/gone.ts');
+    check('dead.mjs caps the provenance list', ref && ref.from.length === DEAD_FROM_CAP,
+      `from.length=${ref ? ref.from.length : 'no referent'}`);
+    // The count is the point: a truncated list that also lost the total would
+    // report a referent named 5,000 times as one named 64 times.
+    check('dead.mjs keeps the true provenance count', ref && ref.fromTotal === DEAD_ENTRY_CAP,
+      `fromTotal=${ref ? ref.fromTotal : 'no referent'}`);
+    check('dead.mjs counts the dropped provenance records',
+      j.droppedFrom === DEAD_ENTRY_CAP - DEAD_FROM_CAP, `droppedFrom=${j.droppedFrom}`);
+
+    const text = execFileSync('node', [join(SCRIPTS, 'dead.mjs'), '--root', root],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    check('dead.mjs report announces the entry cap', text.includes('ENTRY CAP HIT'));
+    check('dead.mjs report shows the provenance remainder',
+      text.includes(`+${DEAD_ENTRY_CAP - DEAD_FROM_CAP} more`),
+      'a silently shortened list reads as the whole list');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+/**
+ * `--json` must survive a PIPE, which is not the same as surviving a file.
+ *
+ * Node's stdout is synchronous for a file or a TTY and asynchronous for a pipe,
+ * so `console.log(big); process.exit(0)` delivered one 65,536-byte pipe buffer
+ * of a 596,029-byte document and exited 0. Every earlier hand-check had used
+ * `>` — where the same call is synchronous and complete — so nine review rounds
+ * read a correct document and none of them piped it.
+ *
+ * That is why this phase pipes through `cat` rather than reading the child's
+ * stdout directly: a parent that drains eagerly races the exit and got 146,176
+ * bytes instead, which is still wrong but not reproducibly wrong. `| cat`
+ * pins the failure at the buffer boundary.
+ *
+ * The fixture crosses that boundary rather than being assumed to: 400 entries
+ * each naming a distinct absent symbol produce ~139KB in ~50ms, and the first
+ * check asserts the size so a future record-shape change cannot shrink this
+ * into a test that pipes 3KB and proves nothing.
+ *
+ * NOT covered: `stale.mjs` and `measure.mjs` carry the identical pattern and
+ * are not exercised here — inflating `stale.mjs` past 64KB means ~400 entries
+ * each costing two `git log` spawns, which is a benchmark. On a real 439-file
+ * repo `stale.mjs` did cross it (83,136 bytes, truncated to the same 65,536)
+ * and `measure.mjs` did not (3,336). Nor does this cover stderr, the text
+ * report, or any `console.log` outside the two `--json` sinks.
+ */
+function testPipedJson() {
+  const root = mkdtempSync(join(tmpdir(), 'todokeeper-pipe-'));
+  try {
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, 'src', 'real.ts'), 'export const a = 1;\n');
+    const lines = ['# TODOS', '', '## Open', ''];
+    for (let i = 0; i < 400; i += 1) {
+      lines.push(`- **E${i}.** A deferred entry naming a symbol absent from this `
+        + `fixture: \`absentSymbolNumber${i}\` (2026-08-17)`);
+    }
+    writeFileSync(join(root, 'TODOS.md'), `${lines.join('\n')}\n`);
+
+    const dead = join(SCRIPTS, 'dead.mjs');
+    const direct = execFileSync('node', [dead, '--root', root, '--json'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
+
+    check('the pipe fixture is larger than one 64KiB pipe buffer',
+      Buffer.byteLength(direct) > 65_536,
+      `${Buffer.byteLength(direct)} bytes — below this, piping proves nothing`);
+
+    const piped = execFileSync('sh',
+      ['-c', `node ${JSON.stringify(dead)} --root ${JSON.stringify(root)} --json | cat`],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
+
+    check('dead.mjs --json survives a pipe intact',
+      Buffer.byteLength(piped) === Buffer.byteLength(direct),
+      `piped ${Buffer.byteLength(piped)} vs ${Buffer.byteLength(direct)} bytes`);
+
+    // Byte-equality alone would pass if BOTH were truncated identically, and a
+    // consumer's real failure is the parse, not the count.
+    let parsed = null;
+    try {
+      parsed = JSON.parse(piped);
+    } catch (err) {
+      check('piped --json parses', false, err.message.slice(0, 80));
+    }
+    if (parsed) {
+      check('piped --json carries every referent', parsed.referents.length === 400,
+        `${parsed.referents.length} referents`);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 // -------------------------------------------------------------------- driver
 
 let root;
@@ -304,6 +438,8 @@ try {
     ['scripts', testScripts],
     ['reports', testReportsSurfaceSuppression],
     ['control-bytes', testNoControlBytes],
+    ['counts', testCounts],
+    ['piped-json', testPipedJson],
   ]) {
     try {
       phase(root);

@@ -24,7 +24,7 @@ import {
   loadConfigOrExit, repoRoot, resolveTargets, sections, entries,
   lastCommitTouching, lastCommitChangingPhrase, classifyReferent,
   buildFileIndex, rel, daysBetween, isCompletedHeading,
-  readTarget, safeField, jsonSafe, MAX_ENTRIES, MAX_REFERENTS,
+  readTarget, safeField, jsonSafe, writeStdout, MAX_ENTRIES, MAX_REFERENTS,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -177,10 +177,10 @@ if (droppedReferents > 0) {
 }
 
 if (asJson) {
-  console.log(jsonSafe({
+  await writeStdout(`${jsonSafe({
     root, minDays, entries: results, unreadTargets, droppedEntries, entryCap: MAX_ENTRIES,
     droppedReferents, referentCap: MAX_REFERENTS,
-  }));
+  })}\n`);
   process.exit(0);
 }
 
