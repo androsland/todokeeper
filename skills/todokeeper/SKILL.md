@@ -283,3 +283,14 @@ used to credit it with the whole range.
 says how many files it skipped, and `ABSENT` is then incomplete by that many
 files. Narrow `ignore` and re-run rather than reading a truncated report as a
 clean one.
+
+**`node test/smoke.mjs` proves the branches execute, not that the verdicts are
+right.** Run it after any edit to `scripts/` — it takes under a second and needs
+nothing installed. It exists because a rename applied to one branch of
+`classifyReferent` and missed on another shipped past `node --check`, which
+parses without resolving identifiers, and crashed every scan of a repo whose
+deferred-work file names a glob. What it cannot do is notice a change that is
+internally consistent and wrong: reclassify every symbol as prose and it still
+passes. For that, diff `--json` against a real repo before and after — **with
+stderr visible**, since a crashed run and an empty result look the same in a
+file. It also does not exercise either count cap.

@@ -48,11 +48,16 @@ run the three scripts against this repo and they should report something sane.
   when the regex went away and are exercised only by hand.
   (2026-08-16, revised 2026-08-17)
 
-- **Nothing tests the scripts.** They have been run against five real repos and
-  their output read by hand, which caught seven classes of false positive, but
-  there is no fixture repo and no assertion. A fixture with a known-answer
-  TODOS.md would let the classifier change without re-reading five repos.
-  (2026-08-16)
+- **`test/smoke.mjs` covers the branches, not the answers.** It executes every
+  `classifyReferent` branch and runs all four scripts end to end against a
+  fixture, which is what a rename that broke the glob branch needed and did not
+  have. What it still does not do: assert that any verdict is CORRECT. The
+  fixture is checked for well-formedness, so a change that reclassified every
+  symbol as prose passes it. That is still caught only by diffing `--json`
+  against real repos by hand, which is the step this entry has not yet replaced.
+  It also skips both count caps deliberately — reaching them costs 8.2s and 39s,
+  which is a benchmark, not a smoke test, so nothing would notice if a cap were
+  deleted. (2026-08-16, narrowed 2026-08-17)
 
 - **`suspect` is only as good as the git history it reads.** It was unexercised
   entirely until a repo with month-old entries was tested — the first test repo's
@@ -114,16 +119,16 @@ run the three scripts against this repo and they should report something sane.
   (security review, 2026-08-17; widened 2026-08-17 when containment and
   regular-file checks joined the cap)
 
-- **Nothing mechanically stops a literal control byte from landing in source.**
-  Three separate edits this session wrote raw `0x1B` / `0x00` / `0x7F` bytes into
-  `lib.mjs` because the editing tool interpreted a typed escape sequence, and
-  each was caught only by reading the file back through `od`. In a tool whose
-  entire subject is control characters, a stray one in `CONTROL_CHARS` itself
-  would be invisible in every diff view and would silently change the class it
-  matches. A ~10-line source scan asserting zero non-layout control bytes across
-  `scripts/*.mjs` would close it. Not built here because it is executable
-  behaviour and gets its own change.
-  (self-review, 2026-08-17)
+- **The control-byte scan covers five files and runs only when someone runs it.**
+  `test/smoke.mjs` now asserts zero non-layout control bytes across the four
+  `scripts/*.mjs` and itself, which closes the case that kept biting. It sees
+  nothing else: `SKILL.md`, `README.md`, `.todokeeper.json` and any fixture are
+  outside the list, and a control byte in a skill file is exactly as invisible in
+  a diff view as one in source. Nor is anything wired to run the suite — no hook,
+  no CI, no pre-commit — so the scan protects only the edits made by someone who
+  runs `node test/smoke.mjs`. Widening the file list is trivial; wiring a trigger
+  is executable behaviour and gets its own change.
+  (self-review, 2026-08-17, narrowed the same day once the scan landed)
 
 - **The 256MB read budget in `dead.mjs` is a guess, not a measurement.** It was
   chosen to sit below a default Node heap; nothing measured what the scanned
@@ -133,6 +138,39 @@ run the three scripts against this repo and they should report something sane.
   (2026-08-17)
 
 ## Completed
+
+- **The control-byte scan found a literal ESC in its own docblock on the first
+  run.** The phase asserts zero non-layout control bytes (C0 minus tab/LF/CR,
+  DEL, and C1 arriving as its `0xC2` UTF-8 lead) across the four `scripts/*.mjs`
+  and the suite itself. Its first run reported `0x1b at line 260` — inside the
+  comment explaining why literal control bytes are a defect, where `^[` had been
+  typed as caret notation and landed as one raw ESC. That is the fourth instance
+  of the same editing-tool behaviour in this repo and the first one a machine
+  caught rather than a hand-run `od`. Verified in both directions: 71/71 on the
+  clean tree, and planting a `0x00` in `measure.mjs` fails the phase with
+  `0x00 at line 1`. Limits are in the open entry above.
+  (round 8, 2026-08-17)
+
+- **A rename shipped broken because `node --check` resolves nothing, and the
+  fix for that is the first test in this repo.** `isIgnoredPath` became
+  `ignoringSegment` on the path branch of `classifyReferent`; the **glob**
+  branch twelve lines above kept calling the old name. `node --check` parses
+  without resolving identifiers, so all four scripts reported clean while
+  `dead.mjs` and `stale.mjs` threw `ReferenceError` on any repo whose
+  deferred-work file names a glob — which is most of them: a larger repo, another repo,
+  a tooling repo and todokeeper itself all crashed, only a small repo (5 referents,
+  no globs) survived. Every proof-of-concept for the round used a plain path, so
+  no hand-run took the broken branch. Caught by diffing `--json` against five
+  real repos, where four came back as **empty files**, and only because stderr
+  had been discarded did that first read as a diff rather than a crash.
+  `test/smoke.mjs` is the response: it executes all 13 classifier branches,
+  runs all four scripts end to end, and asserts the provenance split on the glob
+  branch as well as the path branch. Proven by reintroducing the exact bug —
+  `node --check` still passes, the suite fails 12 checks across all four phases,
+  including `dead.mjs exits 0`. Post-fix parity: 15/15 runs exit 0 and every
+  verdict is byte-identical to pre-change on all five repos (1,219 / 875 / 229 /
+  5 / 28 referents; 183 / 152 / 53 / 4 / 15 entries).
+  (round 8, 2026-08-17)
 
 - **Three findings: two counts that multiply were unbounded, one bucket hid its
   own provenance, and the docs made a claim that measured false.**

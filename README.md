@@ -330,6 +330,32 @@ Astro/TypeScript, Next.js/TypeScript and Python repos, ranging from 2KB to 147KB
 of deferred work, with completed sections written four different ways. The
 smallest were used to confirm it correctly does **nothing**.
 
+```bash
+node test/smoke.mjs      # 71 checks, no dependencies, ~0.6s
+```
+
+The suite builds a throwaway git repo, executes **every** branch of the
+referent classifier, and runs all four scripts end to end. That shape is not
+arbitrary: a rename applied to one branch of `classifyReferent` and missed on
+the branch twelve lines above it shipped past `node --check`, which parses
+without resolving identifiers, and crashed on every repo whose deferred-work
+file names a glob. The suite fails on that bug; `node --check` does not.
+
+One phase scans source rather than behaviour: the four `scripts/*.mjs` and the
+suite itself must carry no literal control byte outside tab, newline and
+carriage return. In a tool whose subject is control characters, a stray one is
+invisible in every diff view and silently changes what it matches. It found a
+literal ESC in its own explanatory comment on its first run. It covers those
+five files only — not the skill, the README or any config — and nothing runs it
+for you.
+
+**It checks that verdicts are well-formed, not that they are right.** A change
+that reclassified every symbol as prose would pass. Correctness is still
+established by diffing `--json` output against real repos — and when you do
+that, do not discard stderr: four crashed runs once read as four empty files.
+It also skips both count caps on purpose, since reaching them costs 8.2s and
+39s; nothing here would notice if a cap were removed.
+
 ## License
 
 MIT
