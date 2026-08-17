@@ -136,6 +136,28 @@ An unstated limit reads as a claim of coverage, so:
 Every residual error is one-directional: a false alarm a human dismisses, never a
 dead referent reported as alive.
 
+### Limits of the safety checks
+
+`.todokeeper.json` is a file in the repo being scanned, so it is treated as
+untrusted input rather than as your own configuration. Three guards, and what
+each one does not cover:
+
+- **Nothing outside the repository is read.** A `targets` entry that resolves
+  out of the tree — through `..` or through a symlink — is skipped, with the
+  path named on stderr. This also refuses a legitimate setup: a repo that
+  deliberately symlinks `TODOS.md` to a shared file elsewhere will not be
+  measured. Run todokeeper where the real file lives instead.
+- **The regex check closes one shape, not the class.** A config pattern is
+  rejected when an unbounded quantifier wraps a group that itself repeats or
+  alternates — `(a+)+`, `(a*)*`, `(a|a)*` — which is the shape that hangs the
+  script for minutes on a 38-character line. Overlapping top-level alternation,
+  a blowup spread across sibling groups, and backreference-driven cases all
+  still compile. It is a guard rail, not a sandbox.
+- **`dead.mjs` reads the repo into memory and stops at 256MB.** Past that it
+  reports how many files went unscanned, and its `ABSENT` verdicts are incomplete
+  by exactly that many files. Narrow `ignore` and re-run rather than reading the
+  truncated result.
+
 ## Splitting and archiving
 
 The skill carries the procedure. The parts worth knowing before you start:

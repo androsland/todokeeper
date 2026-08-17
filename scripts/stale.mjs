@@ -22,9 +22,9 @@
 
 import { readFileSync } from 'node:fs';
 import {
-  loadConfig, repoRoot, resolveTargets, sections, entries,
+  loadConfigOrExit, repoRoot, resolveTargets, sections, entries,
   lastCommitTouching, lastCommitChangingPhrase, classifyReferent,
-  buildFileIndex, rel, daysBetween,
+  buildFileIndex, rel, daysBetween, safeRegExp,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -34,7 +34,7 @@ const root = rootArg !== -1 ? argv[rootArg + 1] : repoRoot();
 const minDaysArg = argv.indexOf('--min-days');
 const minDays = minDaysArg !== -1 ? Number(argv[minDaysArg + 1]) : 0;
 
-const config = loadConfig(root);
+const config = loadConfigOrExit(root);
 const targets = resolveTargets(root, config);
 
 if (targets.length === 0) {
@@ -43,7 +43,7 @@ if (targets.length === 0) {
 }
 
 const targetSpecs = targets.map((t) => rel(root, t));
-const completedRe = new RegExp(config.completedHeadingPattern, 'i');
+const completedRe = safeRegExp(config.completedHeadingPattern, 'i', '`completedHeadingPattern`');
 const index = buildFileIndex(root, config.ignore);
 
 // git log -S over the same phrase repeatedly is the slow part; entries in one

@@ -183,3 +183,22 @@ entries in a bucket a human reads anyway and affects nothing else.
 **Comment detection does not parse string literals**, so a needle inside a quoted
 string after a `//` is misread as commented. That biases toward reporting a live
 referent as COMMENT-ONLY — a false alarm rather than a hidden tombstone.
+
+**Nothing outside the repository is read, including a deliberate symlink.**
+`.todokeeper.json` ships inside the repo being scanned, so it is treated as
+untrusted: a `targets` entry that resolves out of the tree through `..` or a
+symlink is skipped and named on stderr. If a repo genuinely keeps its
+deferred-work file elsewhere and symlinks to it, this refuses to measure it —
+run the scripts where the real file lives.
+
+**The regex safety check closes one shape, not the class.** A config pattern is
+rejected before compiling when an unbounded quantifier wraps a group that itself
+repeats or alternates (`(a+)+`, `(a|a)*`). Overlapping top-level alternation and
+blowups spread across sibling groups still compile, and nothing in Node can
+interrupt a regex once it starts. If a run hangs after a config edit, the pattern
+is the first suspect.
+
+**`dead.mjs` reads the repo into memory and stops at 256MB.** When it stops it
+says how many files it skipped, and `ABSENT` is then incomplete by that many
+files. Narrow `ignore` and re-run rather than reading a truncated report as a
+clean one.

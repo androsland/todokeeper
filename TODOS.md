@@ -58,7 +58,58 @@ run the three scripts against this repo and they should report something sane.
   time and looked like it worked.
   (2026-08-16)
 
+## Untrusted input
+
+- **`safeRegExp` closes one ReDoS shape, not the class.** It rejects an
+  unbounded quantifier wrapping a group that repeats or alternates, which is the
+  demonstrated hang. Overlapping top-level alternation (`^(a|ab)*$`), a blowup
+  spread across sibling groups (`\s*\s*x`), and backreference-driven cases all
+  still compile and can still hang a run with no way to interrupt it. The real
+  fix is a linear-time engine (RE2 via a native dependency) or dropping
+  arbitrary patterns from config in favour of named options — both are larger
+  than the problem is today. Revisit if todokeeper is ever run over repos the
+  operator did not choose.
+  (security review, 2026-08-17)
+
+- **Containment refuses a legitimate setup.** A repo that deliberately symlinks
+  `TODOS.md` to a shared file outside its tree is now unmeasurable. That is the
+  intended trade — the same symlink is the no-config arbitrary-read vector — but
+  an `allowOutsideRoot` opt-in with a loud banner would serve the honest case
+  without reopening the silent one. Nobody has asked for it yet.
+  (security review, 2026-08-17)
+
+- **The 256MB read budget in `dead.mjs` is a guess, not a measurement.** It was
+  chosen to sit below a default Node heap; nothing measured what the scanned
+  repos actually peak at, so the headroom is unknown in both directions. No repo
+  has hit it, which also means the truncation path and its stderr warning have
+  never run outside a synthetic test.
+  (2026-08-17)
+
 ## Completed
+
+- **A repo could make todokeeper read and print files outside itself.**
+  `resolveTargets` built `join(root, target)` and read it, so `"../secrets"` in
+  `.todokeeper.json` escaped — and a git-tracked `TODOS.md` symlink escaped with
+  no config at all, which `dead.mjs` then printed to stdout line by line. Added
+  `contained()`: resolve the real path, require it under the real root, return
+  the original path so display stays stable. Applied to targets, to each file
+  inside a directory target, and to `.todokeeper.json` itself, whose JSON parse
+  error quotes the offending bytes back. Rejections print the path rather than
+  passing silently. (security review, 2026-08-17)
+
+- **A config-supplied regex could hang a run indefinitely.** `entryPattern` and
+  `completedHeadingPattern` went straight to `new RegExp`; `^(\s*[-*]\s*(a+)+)$`
+  against a 38-character line ran past eight seconds with nothing able to
+  interrupt it. Both now go through `safeRegExp`, which rejects the nested
+  unbounded-quantifier shape before compiling and is checked once at config load
+  so the failure names the key. Both shipped defaults pass, as do the four
+  custom patterns tested. (security review, 2026-08-17)
+
+- **`dead.mjs` had a per-file read cap and no total.** A repo of many small
+  files cleared 2MB on every one and still exhausted the heap. Added a 256MB
+  aggregate budget that announces what it skipped — a truncated scan reporting
+  like a complete one would call a live referent ABSENT.
+  (security review, 2026-08-17)
 
 - **Ignored paths reported as missing.** `dist/*.html` and friends read as
   PATH-MISSING in `dead.mjs` while `stale.mjs` already handled them, because the

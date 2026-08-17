@@ -26,8 +26,8 @@
 
 import { readFileSync, statSync } from 'node:fs';
 import {
-  loadConfig, repoRoot, resolveTargets, sections, entries,
-  classifyReferent, buildFileIndex, walkFiles, isText, rel,
+  loadConfigOrExit, repoRoot, resolveTargets, sections, entries,
+  classifyReferent, buildFileIndex, walkFiles, isText, rel, safeRegExp,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -35,7 +35,7 @@ const asJson = argv.includes('--json');
 const rootArg = argv.indexOf('--root');
 const root = rootArg !== -1 ? argv[rootArg + 1] : repoRoot();
 
-const config = loadConfig(root);
+const config = loadConfigOrExit(root);
 const targets = resolveTargets(root, config);
 
 if (targets.length === 0) {
@@ -140,15 +140,39 @@ const files = walkFiles(root, config.ignore)
   .filter((f) => isText(f))
   .filter((f) => !targetSet.has(f)); // the deferred-work file names everything; it proves nothing
 
+// Every text file in the repo is held in memory at once so each referent can be
+// scanned without re-reading. The per-file cap alone bounds nothing in
+// aggregate: a repo of a hundred thousand small files clears it on every file
+// and still exhausts the heap. The total cap is what actually bounds this, and
+// it is announced rather than silent — a truncated scan that reported like a
+// complete one would call a live referent ABSENT.
+const FILE_CAP = 2_000_000;
+const TOTAL_CAP = 256_000_000;
 const contents = new Map();
+let held = 0;
+let skippedForSize = 0;
+let unread = 0;
 for (const f of files) {
   try {
-    if (statSync(f).size > 2_000_000) continue;
+    const { size } = statSync(f);
+    if (size > FILE_CAP) { skippedForSize += 1; continue; }
+    if (held + size > TOTAL_CAP) { unread += 1; continue; }
     contents.set(f, readFileSync(f, 'utf8'));
+    held += size;
   } catch { /* unreadable, skip */ }
 }
+if (unread > 0 || skippedForSize > 0) {
+  const parts = [];
+  if (unread > 0) parts.push(`${unread} past the ${Math.round(TOTAL_CAP / 1e6)}MB read budget`);
+  if (skippedForSize > 0) parts.push(`${skippedForSize} over the ${FILE_CAP / 1e6}MB per-file cap`);
+  process.stderr.write(
+    `todokeeper: ${unread + skippedForSize} file(s) went unscanned (${parts.join(', ')}). `
+    + 'ABSENT verdicts below are only as complete as the scan; narrow it with `ignore` '
+    + 'in .todokeeper.json and re-run.\n',
+  );
+}
 
-const completedRe = new RegExp(config.completedHeadingPattern, 'i');
+const completedRe = safeRegExp(config.completedHeadingPattern, 'i', '`completedHeadingPattern`');
 const index = buildFileIndex(root, config.ignore);
 const seen = new Map();
 

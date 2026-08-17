@@ -21,7 +21,7 @@
 
 import { readFileSync } from 'node:fs';
 import {
-  loadConfig, repoRoot, resolveTargets, sections, entries, rel,
+  loadConfigOrExit, repoRoot, resolveTargets, sections, entries, rel, safeRegExp,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -29,7 +29,7 @@ const asJson = argv.includes('--json');
 const rootArg = argv.indexOf('--root');
 const root = rootArg !== -1 ? argv[rootArg + 1] : repoRoot();
 
-const config = loadConfig(root);
+const config = loadConfigOrExit(root);
 const targets = resolveTargets(root, config);
 
 if (targets.length === 0) {
@@ -39,7 +39,7 @@ if (targets.length === 0) {
   process.exit(2);
 }
 
-const completedRe = new RegExp(config.completedHeadingPattern, 'i');
+const completedRe = safeRegExp(config.completedHeadingPattern, 'i', '`completedHeadingPattern`');
 const files = [];
 
 for (const abs of targets) {

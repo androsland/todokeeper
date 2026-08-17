@@ -7,7 +7,7 @@
  * that guessed at it would be wrong silently.
  */
 
-import { readFileSync, existsSync, statSync, readdirSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, readdirSync, realpathSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
@@ -53,16 +53,175 @@ export const DEFAULTS = {
   ignore: ['node_modules', 'dist', 'build', '.git', 'vendor', 'target', '.next'],
 };
 
+/* ----------------------------------------------------------- untrusted input */
+
+/**
+ * Every path this tool reads must resolve to somewhere inside the repo.
+ *
+ * `join(root, target)` is not containment. `..` inside a target walks out, and
+ * a symlink walks out without containing a `..` at all — so a repo that ships
+ * `TODOS.md` as a symlink is read from outside its own tree with no config
+ * involved. That matters because `dead.mjs` prints matched file lines to
+ * stdout: an escape here is an arbitrary file read with a printer attached.
+ *
+ * Resolve the real path and require it to sit under the real root. An in-repo
+ * symlink still works — `TODOS.md -> docs/TODOS.md` resolves inside root and is
+ * allowed. The ORIGINAL path is returned, not the resolved one, so the paths
+ * printed to the user stay the ones they wrote.
+ *
+ * Returns null for anything absent, unreadable, or outside.
+ */
+export function contained(root, candidate) {
+  try {
+    const realRoot = realpathSync(root);
+    const real = realpathSync(candidate);
+    if (real !== realRoot && !real.startsWith(realRoot + sep)) return null;
+    return candidate;
+  } catch {
+    return null; // absent, broken symlink, or no permission
+  }
+}
+
+/**
+ * Compile a regex that came from `.todokeeper.json`.
+ *
+ * A pattern in repo config is untrusted the same way `targets` is, and an
+ * unbounded quantifier applied to a group that itself repeats or alternates —
+ * `(a+)+`, `(a*)*`, `(a|a)*` — backtracks exponentially. A 38-character line
+ * against `^(\s*[-*]\s*(a+)+)$` runs past eight seconds; nothing in Node can
+ * interrupt it once started, so the check has to happen before compiling.
+ *
+ * The rule is narrow on purpose: an unbounded quantifier (`*`, `+`, `{n,}`) may
+ * not apply to a group containing another unbounded quantifier or an
+ * alternation. Both shipped defaults pass — `(…|…|…)?` is bounded by `?`, and
+ * `(>\s?)*` repeats a group whose only quantifier is bounded.
+ *
+ * What it does NOT catch is written into the non-goals: top-level overlapping
+ * alternation, blowups spread across sibling groups, and backreference-driven
+ * cases all pass this check. It closes the shape that was demonstrated, not the
+ * class.
+ */
+export function safeRegExp(pattern, flags, label) {
+  if (typeof pattern !== 'string') {
+    throw new Error(`${label} must be a string, got ${typeof pattern}`);
+  }
+  if (pattern.length > 500) {
+    throw new Error(`${label} is ${pattern.length} characters; the cap is 500`);
+  }
+  const risk = nestedUnboundedQuantifier(pattern);
+  if (risk) {
+    throw new Error(
+      `${label} can backtrack exponentially: an unbounded quantifier applies to `
+      + `the group ${risk}, which itself repeats or alternates. Rewrite it so the `
+      + `inner group is bounded (\`?\`, \`{0,3}\`) or the outer quantifier is.`,
+    );
+  }
+  return new RegExp(pattern, flags);
+}
+
+/** The group text when one is found, else null. Escapes and classes are skipped. */
+function nestedUnboundedQuantifier(pattern) {
+  const opens = [];
+  for (let i = 0; i < pattern.length; i += 1) {
+    const ch = pattern[i];
+    if (ch === '\\') { i += 1; continue; }
+    if (ch === '[') { // character class: no groups inside, and `]` is literal first
+      i += 1;
+      if (pattern[i] === '^') i += 1;
+      if (pattern[i] === ']') i += 1;
+      while (i < pattern.length && pattern[i] !== ']') {
+        if (pattern[i] === '\\') i += 1;
+        i += 1;
+      }
+      continue;
+    }
+    if (ch === '(') { opens.push(i); continue; }
+    if (ch === ')') {
+      const start = opens.pop();
+      if (start === undefined) continue;
+      const body = pattern.slice(start + 1, i);
+      const outer = quantifierAt(pattern, i + 1);
+      if (outer === 'unbounded' && (hasUnbounded(body) || hasAlternation(body))) {
+        return `\`${pattern.slice(start, i + 1)}\``;
+      }
+    }
+  }
+  return null;
+}
+
+function quantifierAt(pattern, i) {
+  const ch = pattern[i];
+  if (ch === '*' || ch === '+') return 'unbounded';
+  if (ch === '?') return 'bounded';
+  if (ch === '{') {
+    const close = pattern.indexOf('}', i);
+    if (close === -1) return null;
+    return /^\{\d+,\}$/.test(pattern.slice(i, close + 1)) ? 'unbounded' : 'bounded';
+  }
+  return null;
+}
+
+function hasUnbounded(body) {
+  for (let i = 0; i < body.length; i += 1) {
+    if (body[i] === '\\') { i += 1; continue; }
+    if (quantifierAt(body, i) === 'unbounded') return true;
+  }
+  return false;
+}
+
+function hasAlternation(body) {
+  let depth = 0;
+  for (let i = 0; i < body.length; i += 1) {
+    const ch = body[i];
+    if (ch === '\\') { i += 1; continue; }
+    if (ch === '(') depth += 1;
+    else if (ch === ')') depth -= 1;
+    else if (ch === '|' && depth === 0) return true;
+  }
+  return false;
+}
+
 export function loadConfig(root) {
   const path = join(root, '.todokeeper.json');
   if (!existsSync(path)) return { ...DEFAULTS, _source: 'defaults' };
+  // A `.todokeeper.json` symlinked out of the repo would be parsed as config,
+  // and a JSON parse error quotes the offending bytes back in its message —
+  // enough to read a line of any file the process can open.
+  if (!contained(root, path)) {
+    throw new Error('.todokeeper.json resolves outside the repository; refusing to read it');
+  }
   let parsed;
   try {
     parsed = JSON.parse(readFileSync(path, 'utf8'));
   } catch (err) {
     throw new Error(`.todokeeper.json is not valid JSON: ${err.message}`);
   }
-  return { ...DEFAULTS, ...parsed, _source: relative(root, path) };
+  const config = { ...DEFAULTS, ...parsed, _source: relative(root, path) };
+  if (!Array.isArray(config.targets) || config.targets.some((t) => typeof t !== 'string')) {
+    throw new Error('.todokeeper.json: `targets` must be an array of strings');
+  }
+  if (!Array.isArray(config.ignore) || config.ignore.some((t) => typeof t !== 'string')) {
+    throw new Error('.todokeeper.json: `ignore` must be an array of strings');
+  }
+  // Compile both patterns now, so a bad one fails at startup with the key named
+  // rather than midway through a report.
+  safeRegExp(config.completedHeadingPattern, 'i', '`completedHeadingPattern`');
+  safeRegExp(config.entryPattern, '', '`entryPattern`');
+  return config;
+}
+
+/**
+ * CLI entry point for the above. A rejected pattern or a target that escapes
+ * the repo is a thing the user typed, and a V8 stack trace buries the one line
+ * that says which key to fix.
+ */
+export function loadConfigOrExit(root) {
+  try {
+    return loadConfig(root);
+  } catch (err) {
+    process.stderr.write(`todokeeper: ${err.message}\n`);
+    process.exit(2);
+  }
 }
 
 /* -------------------------------------------------------------------- repo */
@@ -87,11 +246,24 @@ export function repoRoot(from = process.cwd()) {
 export function resolveTargets(root, config) {
   const found = [];
   for (const target of config.targets) {
-    const abs = join(root, target);
-    if (!existsSync(abs)) continue;
+    const joined = join(root, target);
+    const abs = contained(root, joined);
+    if (!abs) {
+      // A target that exists but resolves outside was rejected, not absent, and
+      // saying nothing would report an escaped file as a clean repo.
+      if (existsSync(joined)) {
+        process.stderr.write(`todokeeper: skipping \`${target}\` — it resolves outside the repository\n`);
+      }
+      continue;
+    }
     if (statSync(abs).isDirectory()) {
       for (const name of readdirSync(abs).sort()) {
-        if (name.endsWith('.md')) found.push(join(abs, name));
+        if (!name.endsWith('.md')) continue;
+        // The directory passed containment; a file inside it can still be a
+        // symlink pointing out, so each entry is checked on its own.
+        const child = contained(root, join(abs, name));
+        if (child) found.push(child);
+        else process.stderr.write(`todokeeper: skipping \`${target}/${name}\` — it resolves outside the repository\n`);
       }
     } else {
       found.push(abs);
@@ -145,7 +317,7 @@ export function sections(text) {
  * entry stays one entry rather than becoming one per line.
  */
 export function entries(body, entryPattern) {
-  const re = new RegExp(entryPattern);
+  const re = safeRegExp(entryPattern, '', '`entryPattern`');
   const lines = body.split('\n');
   const out = [];
   let current = null;
