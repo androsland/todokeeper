@@ -28,7 +28,7 @@ import { readFileSync, statSync } from 'node:fs';
 import {
   loadConfigOrExit, repoRoot, resolveTargets, sections, entries,
   classifyReferent, buildFileIndex, walkFiles, isText, rel, isCompletedHeading,
-  readTarget, safe, jsonSafe, MAX_REFERENTS,
+  readTarget, safeField, jsonSafe, MAX_REFERENTS,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -40,7 +40,7 @@ const config = loadConfigOrExit(root);
 const targets = resolveTargets(root, config);
 
 if (targets.length === 0) {
-  console.error(`todokeeper: no deferred-work file found. Looked for: ${config.targets.map(safe).join(', ')}`);
+  console.error(`todokeeper: no deferred-work file found. Looked for: ${config.targets.map(safeField).join(', ')}`);
   process.exit(2);
 }
 
@@ -174,6 +174,7 @@ if (unread > 0 || skippedForSize > 0) {
 }
 
 const index = buildFileIndex(root, config.ignore);
+const classified = new Map();
 const seen = new Map();
 
 const unreadTargets = [];
@@ -200,7 +201,37 @@ for (const abs of targets) {
 
     for (const entry of entries(sec.body, config.entryStyles)) {
       for (const raw of entry.referents) {
-        const c = classifyReferent(raw, index);
+        // Two guards on one cost the cap did not bound. `MAX_REFERENTS`
+        // gates INSERTION into `seen`, but classification runs first and is
+        // not free: a path that does NOT resolve falls through to a basename
+        // filter that is O(files sharing that basename). Measured against
+        // 3,001 files named `x.ts`, 30,000 classifications cost 1.61s for
+        // `zzz/x.ts` and 0.015s for `a/x.ts` — the exact-hit lookup
+        // short-circuits, so the expensive shape is specifically a referent
+        // that MISSES. (The review that raised this measured the resolving
+        // form and got 1.77s; that input does not reproduce, the miss does.)
+        //
+        // Memoising on the raw string kills the repeated-referent case.
+        // Distinct raws it cannot help, so the second guard stops classifying
+        // once the cap is reached: past that point an unseen referent can only
+        // be dropped, so paying to classify it buys nothing. That widens
+        // `droppedReferents` slightly — a prose or external referent arriving
+        // after the cap now counts as dropped where before it was skipped
+        // silently — which overstates a truncation warning rather than
+        // understating it.
+        //
+        // `index` is built once per run and `classifyReferent` reads it
+        // without mutating, so a given string's classification is invariant
+        // for the whole run.
+        if (seen.size >= MAX_REFERENTS && !classified.has(raw)) {
+          droppedReferents += 1;
+          continue;
+        }
+        let c = classified.get(raw);
+        if (c === undefined) {
+          c = classifyReferent(raw, index);
+          classified.set(raw, c);
+        }
         // Prose is a command or a sentence; external is a package or a URL; a
         // ref is a branch and a route is a URL. None of the four is a symbol
         // the repo could have lost, and grepping the source for `/` or for a
@@ -291,7 +322,7 @@ console.log(`todokeeper dead — ${root}`);
 console.log(`${report.length} distinct referents, scanned across ${contents.size} files\n`);
 
 if (unreadTargets.length) {
-  console.log(`UNREAD TARGET (${unreadTargets.length}): ${unreadTargets.map(safe).join(', ')}`);
+  console.log(`UNREAD TARGET (${unreadTargets.length}): ${unreadTargets.map(safeField).join(', ')}`);
   console.log('No referent from these files was collected — see stderr for why.\n');
 }
 
@@ -322,16 +353,16 @@ for (const key of order) {
       console.log(`  ${bySuppression.length} of these were excluded by this repo's own .todokeeper.json,`);
       console.log('  not by todokeeper\'s defaults. Check the entry before reading it as out of scope:');
       for (const r of bySuppression) {
-        console.log(`    \`${safe(r.raw)}\`  — under \`${safe(r.ignoredBy)}\``);
+        console.log(`    \`${safeField(r.raw)}\`  — under \`${safeField(r.ignoredBy)}\``);
       }
     }
     console.log('');
     continue;
   }
   for (const r of list) {
-    console.log(`  \`${safe(r.raw)}\``);
-    console.log(`    named by: ${r.from.map((f) => `${safe(f.file)} :: ${safe(f.lead.slice(0, 56))}`).join(' | ')}`);
-    for (const h of r.hits) console.log(`    ${safe(h.path)}:${h.line}  ${safe(h.text)}`);
+    console.log(`  \`${safeField(r.raw)}\``);
+    console.log(`    named by: ${r.from.map((f) => `${safeField(f.file)} :: ${safeField(f.lead.slice(0, 56))}`).join(' | ')}`);
+    for (const h of r.hits) console.log(`    ${safeField(h.path)}:${h.line}  ${safeField(h.text)}`);
   }
   console.log('');
 }

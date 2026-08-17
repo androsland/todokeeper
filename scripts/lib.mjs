@@ -105,6 +105,40 @@ export function safe(value) {
   return typeof value === 'string' ? value.replace(CONTROL_CHARS, '') : value;
 }
 
+/**
+ * `safe()` for a value interpolated into ONE report line — which is every print
+ * site in this tool.
+ *
+ * Letting layout through was wrong, and the docblock above stated the threat
+ * correctly while drawing the opposite conclusion: "a SUSPECT finding can be
+ * redrawn to look clean" is achieved by a bare CARRIAGE RETURN, with no ESC
+ * anywhere. CR rewrites the line the terminal has already drawn; LF forges
+ * whole additional lines. The measured sinks are not the deferred-work file's
+ * prose but the parts a contributor reaches without touching it at all — a
+ * FILENAME, a `targets` entry in `.todokeeper.json`, and a git commit SUBJECT,
+ * which the docblock above already singles out as the widest path.
+ *
+ * Bidi controls ride along, and not because they are control characters —
+ * U+202E and the isolates are ordinary format characters that reorder a
+ * rendered line, so a referent can display as something other than what it
+ * names. The defect is rendering manipulation; the category was never the point.
+ *
+ * Escaped rather than stripped, so the operator can see that something was
+ * there. `safe()` stays correct for a genuinely multi-line body, of which this
+ * tool currently prints none. `--json` stays on `jsonSafe`: `JSON.stringify`
+ * already escapes tab, CR and LF, and re-escaping them here would corrupt
+ * legitimate values.
+ */
+const FIELD_UNSAFE = /[\t\n\r\u202A-\u202E\u2066-\u2069]/g;
+
+export function safeField(value) {
+  if (typeof value !== 'string') return value;
+  return safe(value).replace(
+    FIELD_UNSAFE,
+    (c) => `\\u${c.codePointAt(0).toString(16).padStart(4, '0')}`,
+  );
+}
+
 /** The bytes `JSON.stringify` leaves raw: DEL and the whole C1 block. */
 const JSON_RAW_CONTROLS = /[\u007F-\u009F]/g;
 
@@ -189,8 +223,14 @@ export const MANIFEST_CAP = 1_000_000;
  * PRODUCT did not: a target at `TARGET_CAP` holds roughly 655,000 referents,
  * which against a corpus at `dead.mjs`'s 256MB budget is about 4.2 hours.
  *
- * `stale.mjs` spawns one `git log -S` child per distinct entry needle, so its
- * cost is linear in entry count and was unbounded the same way.
+ * `stale.mjs` spawns one `git log -S` child per distinct entry needle, so that
+ * half is linear in entry count and was unbounded the same way. It is only
+ * half: `lastCommitTouching` is a SECOND child per distinct resolved referent
+ * PATH, and referents-per-entry has no bound of its own — one entry naming
+ * 1,200 resolving referents spawned 1,201 children with the entry counter at 1.
+ * This docblock claimed entry count bounded process count, and it did not.
+ * `MAX_REFERENTS` now caps `stale.mjs`'s path cache as well: 5,010 distinct
+ * paths dated 5,000 and announced the 10, in 26.5s.
  *
  * 5,000 comes from measurement rather than taste, and the two dimensions were
  * measured over overlapping-but-different sets of repos, so they are quoted
@@ -234,7 +274,7 @@ export function readTarget(path, label = path) {
   try {
     st = statSync(path);
   } catch (err) {
-    process.stderr.write(`todokeeper: cannot stat \`${safe(label)}\` — ${safe(err.message)}\n`);
+    process.stderr.write(`todokeeper: cannot stat \`${safeField(label)}\` — ${safeField(err.message)}\n`);
     return null;
   }
   // A size cap bounds a FILE, and this is the check that decides it is one.
@@ -245,7 +285,7 @@ export function readTarget(path, label = path) {
   // way in (a symlink out of the tree); this stops the rest.
   if (!st.isFile()) {
     process.stderr.write(
-      `todokeeper: skipping \`${safe(label)}\` — not a regular file. A device or fifo `
+      `todokeeper: skipping \`${safeField(label)}\` — not a regular file. A device or fifo `
       + 'reports size 0 and then reads without end, so no size cap can bound it.\n',
     );
     return null;
@@ -253,7 +293,7 @@ export function readTarget(path, label = path) {
   const { size } = st;
   if (size > TARGET_CAP) {
     process.stderr.write(
-      `todokeeper: skipping \`${safe(label)}\` — ${(size / 1e6).toFixed(1)}MB is over the `
+      `todokeeper: skipping \`${safeField(label)}\` — ${(size / 1e6).toFixed(1)}MB is over the `
       + `${TARGET_CAP / 1e6}MB per-file cap. Reading it costs several times its size in memory `
       + 'and would end the process rather than the read. Anything below is missing this file.\n',
     );
@@ -262,7 +302,7 @@ export function readTarget(path, label = path) {
   try {
     return readFileSync(path, 'utf8');
   } catch (err) {
-    process.stderr.write(`todokeeper: cannot read \`${safe(label)}\` — ${safe(err.message)}\n`);
+    process.stderr.write(`todokeeper: cannot read \`${safeField(label)}\` — ${safeField(err.message)}\n`);
     return null;
   }
 }
@@ -430,6 +470,17 @@ function checkWordList(key, value) {
       `.todokeeper.json: \`${key}\` has ${value.length} entries; the limit is ${MAX_LIST_ITEMS}.`,
     );
   }
+  // An empty string is not a word, and it is not inert: `measure.mjs` counts
+  // inline markers with `body.split(marker)`, which on '' returns one string
+  // PER CHARACTER. A 20MB target with 100 empty markers measured 0.95s -> 10.5s
+  // (ASCII) and -> 23.7s on Greek, where V8's single-character string cache
+  // does not apply. `isCompletedHeading` already skipped empty words; this is
+  // the same guard at the boundary, so it covers both lists at once.
+  if (value.some((t) => t.length === 0)) {
+    throw new Error(
+      `.todokeeper.json: \`${key}\` has an empty entry. These are single words, not patterns.`,
+    );
+  }
   const long = value.find((t) => t.length > MAX_LIST_ITEM_CHARS);
   if (long !== undefined) {
     throw new Error(
@@ -469,7 +520,7 @@ export function loadConfig(root) {
   } catch (err) {
     // The parse error quotes the offending bytes, so this message carries
     // config-controlled text into a terminal.
-    throw new Error(`.todokeeper.json is not valid JSON: ${safe(err.message)}`);
+    throw new Error(`.todokeeper.json is not valid JSON: ${safeField(err.message)}`);
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('.todokeeper.json must contain a JSON object');
@@ -488,7 +539,7 @@ export function loadConfig(root) {
   const unknown = Object.keys(parsed).filter((k) => !Object.hasOwn(DEFAULTS, k));
   if (unknown.length) {
     throw new Error(
-      `.todokeeper.json: unknown key(s) ${unknown.map((k) => `\`${safe(k)}\``).join(', ')}. `
+      `.todokeeper.json: unknown key(s) ${unknown.map((k) => `\`${safeField(k)}\``).join(', ')}. `
       + `Known keys: ${Object.keys(DEFAULTS).join(', ')}.`
       + (unknown.some((k) => k === 'entryPattern' || k === 'completedHeadingPattern')
         ? ' Regex config was removed on purpose — use `entryStyles` and `completedHeadings`.'
@@ -540,7 +591,7 @@ export function loadConfigOrExit(root) {
     // Every message reaching here has passed through config-controlled text at
     // least once — a key name, a style name, a parse error quoting the bytes.
     // This is the single choke point for all of them.
-    process.stderr.write(`todokeeper: ${safe(err.message)}\n`);
+    process.stderr.write(`todokeeper: ${safeField(err.message)}\n`);
     process.exit(2);
   }
 }
@@ -573,7 +624,7 @@ export function resolveTargets(root, config) {
       // A target that exists but resolves outside was rejected, not absent, and
       // saying nothing would report an escaped file as a clean repo.
       if (existsSync(joined)) {
-        process.stderr.write(`todokeeper: skipping \`${safe(target)}\` — it resolves outside the repository\n`);
+        process.stderr.write(`todokeeper: skipping \`${safeField(target)}\` — it resolves outside the repository\n`);
       }
       continue;
     }
@@ -584,7 +635,7 @@ export function resolveTargets(root, config) {
         // symlink pointing out, so each entry is checked on its own.
         const child = contained(root, join(abs, name));
         if (child) found.push(child);
-        else process.stderr.write(`todokeeper: skipping \`${safe(target)}/${safe(name)}\` — it resolves outside the repository\n`);
+        else process.stderr.write(`todokeeper: skipping \`${safeField(target)}/${safeField(name)}\` — it resolves outside the repository\n`);
       }
     } else {
       found.push(abs);
@@ -936,17 +987,47 @@ export function classifyReferent(raw, index = null) {
  */
 function ignoringSegment(path, index) {
   if (!index || !index.ignore) return null;
-  const first = path.split('/')[0];
-  return index.ignore.has(first) ? first : null;
+  // EVERY segment, because that is what the walk does: `walkFiles` compares
+  // `skip` against each entry's basename at every depth, so `internal` in
+  // `ignore` removes `src/internal/auth.ts` from the index just as surely as
+  // `internal/auth.ts`. This asked about segment 0 only, and the two answers
+  // disagreed for anything nested — the file was never indexed, nothing
+  // reported it as excluded, and it fell out the bottom as PATH-MISSING.
+  // That is worse than the bucket this function exists to expose: instead of
+  // a quiet count, the tool made the affirmative claim that a file which
+  // exists on disk is gone, which invites deleting a live entry as obsolete.
+  // Measured on a fixture where `src/internal/auth.ts` exists and `internal`
+  // is in the repo's own `ignore`.
+  for (const seg of path.replace(/^\.\//, '').split('/')) {
+    if (index.ignore.has(seg)) return seg;
+  }
+  return null;
 }
 
 /* ------------------------------------------------------------------ commit */
 
+/**
+ * `--literal-pathspecs` because `--` does NOT disable pathspec MAGIC, and every
+ * pathspec here is repo-derived: a resolved referent path, or a `targets` entry
+ * from the audited repo's own config. A tracked file named `:(exclude)src/z.ts`
+ * made this report the wrong commit for an unrelated entry and flipped it to
+ * `suspect` with a fabricated 2,421-day gap; the same magic in a `targets`
+ * directory name steered the phrase search. `execFileSync` with an argv array
+ * already prevents shell and flag injection — this is the separate half.
+ *
+ * It goes BEFORE the subcommand: `git log --literal-pathspecs` exits
+ * `fatal: unrecognized argument`, which this function catches and turns into
+ * `null` — so the wrong placement disables every commit lookup in the tool and
+ * reports it as "no path referent" rather than as an error. Both forms were run
+ * on git 2.34.1 before this landed. `GIT_LITERAL_PATHSPECS=1` in the child's
+ * env is equivalent and was measured working; the flag is used because it is
+ * visible in the argv rather than inherited.
+ */
 export function lastCommitTouching(root, pathspecs, extraArgs = []) {
   try {
     const out = execFileSync(
       'git',
-      ['log', '-1', '--format=%H%x09%cI%x09%s', ...extraArgs, '--', ...pathspecs],
+      ['--literal-pathspecs', 'log', '-1', '--format=%H%x09%cI%x09%s', ...extraArgs, '--', ...pathspecs],
       { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
     ).trim();
     if (!out) return null;
@@ -963,7 +1044,7 @@ export function lastCommitChangingPhrase(root, phrase, pathspecs) {
   try {
     const out = execFileSync(
       'git',
-      ['log', '-1', '--format=%H%x09%cI%x09%s', `-S${phrase}`, '--', ...pathspecs],
+      ['--literal-pathspecs', 'log', '-1', '--format=%H%x09%cI%x09%s', `-S${phrase}`, '--', ...pathspecs],
       { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
     ).trim();
     if (!out) return null;

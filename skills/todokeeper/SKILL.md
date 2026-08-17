@@ -272,9 +272,11 @@ read is not byte-identical to the repo.** Headings, entry leads, source lines
 and commit subjects are all written by whoever can commit, and an ESC in any of
 them would be executed by your terminal rather than shown — for a tool that
 exists to print findings, that means a hostile repo could redraw a `SUSPECT`
-line to look clean. C0 and C1 are removed at every print sink; tab, newline and
-carriage return survive. Only control characters go: Greek, German and emoji
-are untouched. Use `--json` if you need the exact bytes — it escapes them
+line to look clean. C0 and C1 are removed at every print sink. Tab, newline and
+carriage return are layout inside a quoted body and forgery on a one-line
+finding, so single-line sinks escape those three as well, plus the bidi
+overrides (U+202A–U+202E, U+2066–2069). Only control and format characters go:
+Greek, German and emoji are untouched. Use `--json` if you need the exact bytes — it escapes them
 rather than stripping them, so a parser recovers the original codepoint. That
 escaping is todokeeper's own: `JSON.stringify` covers C0 only, and this line
 used to credit it with the whole range.

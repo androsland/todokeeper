@@ -21,7 +21,7 @@
 
 import {
   loadConfigOrExit, repoRoot, resolveTargets, sections, entries, rel, isCompletedHeading,
-  readTarget, safe, jsonSafe,
+  readTarget, safeField, jsonSafe,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -33,7 +33,7 @@ const config = loadConfigOrExit(root);
 const targets = resolveTargets(root, config);
 
 if (targets.length === 0) {
-  const msg = `todokeeper: no deferred-work file found. Looked for: ${config.targets.map(safe).join(', ')}`;
+  const msg = `todokeeper: no deferred-work file found. Looked for: ${config.targets.map(safeField).join(', ')}`;
   if (asJson) console.log(jsonSafe({ error: msg, targets: config.targets }));
   else console.error(msg);
   process.exit(2);
@@ -141,13 +141,13 @@ console.log(`todokeeper measure — ${root}`);
 console.log(`config: ${config._source}\n`);
 
 if (skipped.length) {
-  console.log(`UNREAD (${skipped.length}): ${skipped.map(safe).join(', ')}`);
+  console.log(`UNREAD (${skipped.length}): ${skipped.map(safeField).join(', ')}`);
   console.log('Every number below excludes these files — see stderr for why. Sizes,');
   console.log('completed mass and the threshold verdict are all incomplete by that much.\n');
 }
 
 for (const f of files) {
-  console.log(`${safe(f.path)}`);
+  console.log(`${safeField(f.path)}`);
   console.log(`  size            ${kb(f.bytes)} (${f.bytes.toLocaleString()} B, ${f.lines} lines)`);
   console.log(`  completed mass  ${kb(f.completedBytes)} (${f.completedBytes.toLocaleString()} B, ${f.completedPercent}% of file, ${f.completedEntries} entries)`);
   console.log(`  live entries    ${f.liveEntries}`);
@@ -158,7 +158,7 @@ for (const f of files) {
   const biggest = [...f.sections].sort((a, b) => b.bytes - a.bytes).slice(0, 5);
   console.log('  largest sections:');
   for (const s of biggest) {
-    console.log(`    ${pad(kb(s.bytes), 8)} ${pad(`${s.entries}e`, 5)} ${s.completed ? '[completed] ' : ''}${'#'.repeat(Math.max(s.depth, 1))} ${safe(s.heading)}`);
+    console.log(`    ${pad(kb(s.bytes), 8)} ${pad(`${s.entries}e`, 5)} ${s.completed ? '[completed] ' : ''}${'#'.repeat(Math.max(s.depth, 1))} ${safeField(s.heading)}`);
   }
   console.log('');
 }
@@ -168,7 +168,7 @@ if (files.length > 1) {
 }
 
 if (verdict.crossed) {
-  console.log(`OVER THRESHOLD (${kb(config.splitThresholdBytes)} / ${config.splitThresholdBytes.toLocaleString()} B): ${verdict.filesOverThreshold.map(safe).join(', ')}`);
+  console.log(`OVER THRESHOLD (${kb(config.splitThresholdBytes)} / ${config.splitThresholdBytes.toLocaleString()} B): ${verdict.filesOverThreshold.map(safeField).join(', ')}`);
   console.log('A split is relief, not a fix — the open half routinely stays over the threshold too.');
   console.log('Read the completed mass above before deciding: splitting a file whose archive is a');
   console.log('rounding error moves almost nothing and makes a stale section look maintained.');

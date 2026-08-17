@@ -201,7 +201,10 @@ throughout. Each guard, and what it does not cover:
   which against a 256MB corpus is about **4.2 hours** of pegged CPU from a
   `TODOS.md` that looks entirely ordinary. `stale.mjs` has the same shape by a
   different mechanism — one `git log -S` child process per distinct entry needle,
-  with nothing bounding entry count. The cap is set from measurement, not taste:
+  with nothing bounding entry count, **and** a second child per distinct resolved
+  referent path, which the entry cap does not bound at all (one entry naming
+  1,200 resolving referents spawned 1,201 children). `MAX_REFERENTS` caps that
+  second dimension too. The cap is set from measurement, not taste:
   across the six largest real deferred-work files on hand the most any one holds
   is **1,219** distinct referents and **195** entries, so 5,000 is 4.1× and 25.6×
   the observed maxima. Hitting it is announced on stderr **and** in the report,
@@ -248,10 +251,19 @@ throughout. Each guard, and what it does not cover:
   honouring OSC 52 the same primitive writes to your clipboard. The
   commit-subject path needs no edit to the deferred-work file at all — an
   ordinary commit to any file it happens to reference, with the payload in the
-  subject. So C0 and C1 are removed at every print sink; tab, newline and
-  carriage return survive as layout. **This strips control characters, never a
-  character set** — Greek, German and emoji pass through untouched, for the
-  same reason non-ASCII is legal in the word lists.
+  subject. So C0 and C1 are removed at every print sink. **This strips control
+  characters, never a character set** — Greek, German and emoji pass through
+  untouched, for the same reason non-ASCII is legal in the word lists.
+- **Tab, newline and carriage return are layout in a body and forgery on a
+  report line**, so there are two sinks rather than one. A multi-line quote
+  keeps them; every single-line print — a filename, a heading, a config value, a
+  commit subject — escapes them, along with the bidi overrides (U+202A–U+202E,
+  U+2066–2069), which are format characters rather than control characters but
+  reorder a line just as effectively. Without that split a bare carriage return
+  is enough to forge a clean-looking finding, with no ESC involved at all. The
+  split is a convention held by whoever writes the next `console.log`: nothing
+  lints it, and a single-line report built with the body-sink helper compiles,
+  reviews and ships.
 - **`--json` escapes those bytes rather than stripping them** — its output is
   safe to `cat`, and a parser still decodes the escape back to the repo's
   original codepoint, which is the fidelity the flag exists for. This was
@@ -347,7 +359,9 @@ carriage return. In a tool whose subject is control characters, a stray one is
 invisible in every diff view and silently changes what it matches. It found a
 literal ESC in its own explanatory comment on its first run. It covers those
 five files only — not the skill, the README or any config — and nothing runs it
-for you.
+for you. It is also blind to the bidi overrides it teaches the reports to
+escape: those are format characters, not control characters, and four literal
+ones reached `lib.mjs` while that very escaping was being written.
 
 **It checks that verdicts are well-formed, not that they are right.** A change
 that reclassified every symbol as prose would pass. Correctness is still

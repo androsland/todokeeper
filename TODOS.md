@@ -130,6 +130,35 @@ run the three scripts against this repo and they should report something sane.
   is executable behaviour and gets its own change.
   (self-review, 2026-08-17, narrowed the same day once the scan landed)
 
+- **The control-byte scan is blind to the exact characters that landed in source
+  while it was being written.** `testNoControlBytes` covers C0-minus-layout, DEL
+  and C1. Bidi overrides (U+202A–U+202E, U+2066–2069) are *format* characters,
+  not control characters, so the scan does not see them — and four literal ones
+  went into `lib.mjs` during round 8, put there by the editing tool while writing
+  the regex that escapes them, and found by a hand-run scan rather than the
+  suite. `safeField` escapes them on OUTPUT; nothing checks for them in SOURCE.
+  Widening the scan is a one-line character-class change and was deliberately not
+  bundled with a security fix round. (self-review, 2026-08-17)
+
+- **Nothing enforces `safeField` at a print sink that does not exist yet.**
+  Every current single-line `console.log` in the four scripts routes through it —
+  12 sites in `lib.mjs`, 9 in `dead.mjs`, 13 in `stale.mjs`, 5 in `measure.mjs` —
+  but the split between `safe()` (multi-line-tolerant) and `safeField()` (single
+  line, escapes CR/LF/tab/bidi) is a convention held by whoever writes the next
+  line. No lint rule, no test, no wrapper type. The failure mode is silent: a new
+  `${safe(heading)}` in a one-line report reads correctly in review and forges a
+  report line at runtime. (self-review, 2026-08-17)
+
+- **`stale.mjs` still classifies every referent occurrence, with no memoisation.**
+  `dead.mjs` now caches `classifyReferent` on the raw string; `stale.mjs` calls
+  `resolveReferent` per occurrence and only caches the git lookup that follows.
+  The cost is bounded by `MAX_REFERENTS` on the git children, which is the
+  expensive half, so the remaining exposure is index lookups on repeated
+  non-resolving strings — measured at 0.65s per 30,000 in `dead.mjs`'s harness,
+  and `stale.mjs` has no harness of its own. Left because the two scripts resolve
+  through different call shapes and unifying them is a refactor, not a fix.
+  (self-review, 2026-08-17)
+
 - **The 256MB read budget in `dead.mjs` is a guess, not a measurement.** It was
   chosen to sit below a default Node heap; nothing measured what the scanned
   repos actually peak at, so the headroom is unknown in both directions. No repo
@@ -138,6 +167,53 @@ run the three scripts against this repo and they should report something sane.
   (2026-08-17)
 
 ## Completed
+
+- **Six findings, and three of them were bypasses of guards this same repo had
+  just installed.** (1) *A suppression check disagreed with the walk it was
+  checking.* `walkFiles` skips `skip.has(item.name)` at EVERY depth, so
+  `ignore: ["internal"]` removes `src/internal/auth.ts`; `ignoringSegment` asked
+  only about segment 0, so the same file came back `PATH-MISSING`,
+  `ignored:false` — the tool asserting a file that exists on disk does not. This
+  is the provenance bucket from round 7 being walked straight around: put the
+  directory anywhere but first and the quiet bucket is skipped for the loud one.
+  Reproduced before, and after the fix the same repo reports `PATH-NOT-SCANNED`
+  with `ignoredByConfig:true`. (2) *`MAX_ENTRIES` never bounded the second
+  child.* `stale.mjs` spawns one `git log -S` per distinct entry needle AND one
+  `git log` per distinct resolved referent path, and referents-per-entry has no
+  bound — one entry naming 1,200 resolving referents spawned 1,201 children with
+  the entry counter at 1. `pathCache` is now capped at `MAX_REFERENTS`, with the
+  drop count on stderr, in the report and in `--json`; proven against a
+  5,010-referent fixture — 5,000 dated, 10 announced, 26.49s. The cap docblock
+  and the README both claimed entry count bounded process count; both were
+  corrected in the same commit. (3) *`safe()` deliberately passes the bytes that
+  forge a report line.* It strips C0 and C1 but leaves tab, LF and CR, which is
+  right for a multi-line body and wrong for every single-line print sink — and
+  round 5's own entry stated the threat correctly while drawing the opposite
+  conclusion, since "redraw a SUSPECT finding to look clean" needs a bare
+  CARRIAGE RETURN and no ESC anywhere. Measured sinks: a FILENAME, a `targets`
+  config entry, a git commit SUBJECT. New `safeField` escapes tab/LF/CR plus the
+  bidi overrides (U+202A–U+202E, U+2066–2069 — included for rendering
+  manipulation, not for category) at 39 sites across the four scripts. Verified:
+  a filename carrying CR/LF that previously forged an `ABSENT (0)` line now
+  prints its escapes literally. (4) *Pathspec magic in a git argument.* Both git
+  children took referent strings as pathspecs, so a tracked file named
+  `:(exclude)src/z.ts` steered the date lookup. `--literal-pathspecs` fixes it —
+  but it is a git GLOBAL option: the review's suggested `git log
+  --literal-pathspecs` exits `fatal: unrecognized argument` (git 2.34.1), which
+  `lastCommitTouching` catches and returns as `null`, silently disabling every
+  commit lookup in the tool. Placed before the subcommand and verified in both
+  directions. (5) *Classification cost was per occurrence.* Memoised on the raw
+  string in `dead.mjs`, and skipped entirely once `seen.size` reaches
+  `MAX_REFERENTS`. The review measured the resolving form and reported 1.77s;
+  that input does not reproduce — an exact index hit short-circuits the
+  same-basename filter, so 30,000 classifications of `a/x.ts` cost 0.015s and
+  only the MISS is expensive, 1.61s against 3,001 files named `x.ts`. Measured
+  improvement on the shape that actually costs: 30k non-resolving 1.18s → 0.65s,
+  100k 2.58s → 0.77s. (6) *An empty word-list entry matched everything.*
+  `checkWordList` bounded length and count but not emptiness; `""` in
+  `inlineDoneMarkers` hits at every index of every line — 0.95s → 10.5s ASCII and
+  23.7s Greek on a 20MB target. Now rejected by name. 71/71 smoke checks after
+  every change. (security review round 8, 2026-08-17)
 
 - **The control-byte scan found a literal ESC in its own docblock on the first
   run.** The phase asserts zero non-layout control bytes (C0 minus tab/LF/CR,
