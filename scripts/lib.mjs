@@ -185,6 +185,44 @@ export function isEntryStart(line, styles) {
   return false;
 }
 
+/**
+ * Bounds on the two word lists, and why only these two carry them.
+ *
+ * `isCompletedHeading` lowercases every word in `completedHeadings` for every
+ * heading in every target file, so its cost is `headings × Σ(word lengths)` —
+ * the one place in this tool where two attacker-controlled dimensions multiply.
+ * Measured: 500 words of 10KB against 5,000 headings takes 8.7s; the same 500
+ * words at 10 characters each takes 0.167s. The ARRAY length is nearly free and
+ * the STRING length is the whole cost, so the per-word cap is the half that
+ * matters and the item cap is a second wall rather than the fix.
+ *
+ * `targets` and `ignore` are deliberately left unbounded: one resolves each
+ * entry once and the other becomes a Set, so a long list costs time in
+ * proportion to what the author wrote and multiplies against nothing.
+ * `inlineDoneMarkers` is bounded here for symmetry, not for a measured need —
+ * it reaches `String.prototype.split`, which stayed under 2s even at 40MB.
+ */
+const MAX_LIST_ITEMS = 100;
+const MAX_LIST_ITEM_CHARS = 64;
+
+function checkWordList(key, value) {
+  if (!Array.isArray(value) || value.some((t) => typeof t !== 'string')) {
+    throw new Error(`.todokeeper.json: \`${key}\` must be an array of strings`);
+  }
+  if (value.length > MAX_LIST_ITEMS) {
+    throw new Error(
+      `.todokeeper.json: \`${key}\` has ${value.length} entries; the limit is ${MAX_LIST_ITEMS}.`,
+    );
+  }
+  const long = value.find((t) => t.length > MAX_LIST_ITEM_CHARS);
+  if (long !== undefined) {
+    throw new Error(
+      `.todokeeper.json: \`${key}\` has an entry of ${long.length} characters; `
+      + `the limit is ${MAX_LIST_ITEM_CHARS}. These are single words, not patterns.`,
+    );
+  }
+}
+
 export function loadConfig(root) {
   const path = join(root, '.todokeeper.json');
   if (!existsSync(path)) return { ...DEFAULTS, _source: 'defaults' };
@@ -224,9 +262,15 @@ export function loadConfig(root) {
   if (!Array.isArray(config.ignore) || config.ignore.some((t) => typeof t !== 'string')) {
     throw new Error('.todokeeper.json: `ignore` must be an array of strings');
   }
-  if (!Array.isArray(config.completedHeadings)
-    || config.completedHeadings.some((t) => typeof t !== 'string')) {
-    throw new Error('.todokeeper.json: `completedHeadings` must be an array of strings');
+  checkWordList('completedHeadings', config.completedHeadings);
+  checkWordList('inlineDoneMarkers', config.inlineDoneMarkers);
+  // Unvalidated, this reached a numeric comparison and simply made `crossed`
+  // always false — a config typo that silently reports every file as under the
+  // threshold, which is the one answer nobody re-checks.
+  if (typeof config.splitThresholdBytes !== 'number'
+    || !Number.isFinite(config.splitThresholdBytes)
+    || config.splitThresholdBytes < 0) {
+    throw new Error('.todokeeper.json: `splitThresholdBytes` must be a non-negative number');
   }
   // Checked at load, so an unknown style names the key rather than silently
   // matching nothing and reporting every section as holding zero entries.

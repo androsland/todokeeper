@@ -98,7 +98,11 @@ heading. Otherwise, `.todokeeper.json` at the repo root:
 ```
 
 `targets` takes files or directories. Every key is optional; an unknown key is
-an error rather than a silent no-op.
+an error rather than a silent no-op, and so is a value of the wrong type — a
+`splitThresholdBytes` given as a string used to pass silently and report every
+file as under the threshold. `completedHeadings` and `inlineDoneMarkers` hold at
+most 100 entries of at most 64 characters each; these are words, and the bound
+is [a real one](#limits-of-the-safety-checks).
 
 **No key takes a regex, deliberately** — see [the safety limits](#limits-of-the-safety-checks).
 `completedHeadings` is a list of literal words matched case-insensitively at the
@@ -167,16 +171,29 @@ each one does not cover:
   shapes it names, so a deferred-work file that marks entries some other way is
   not parseable here at all — that is a missing style to add, not a config to
   write.
+- **The word lists are bounded at 100 entries of 64 characters.** Removing the
+  regex did not remove the cost: `completedHeadings` is lowercased once per word
+  per heading, so its cost is `headings × Σ(word lengths)` — two
+  attacker-controlled dimensions multiplying. Measured, 500 words of 10KB
+  against 5,000 headings took **8.7 seconds**; the same 500 words at 10
+  characters took **0.167**. The string length is the whole cost and the item
+  count is nearly free, which is why the per-word cap is the real fix and the
+  item cap is only a second wall. `targets` and `ignore` are deliberately left
+  unbounded — one resolves each entry once, the other becomes a Set, and neither
+  multiplies against anything.
 - **`dead.mjs` reads the repo into memory and stops at 256MB.** Past that it
   reports how many files went unscanned, and its `ABSENT` verdicts are incomplete
   by exactly that many files. Narrow `ignore` and re-run rather than reading the
   truncated result.
 
-Two things these guards do **not** cover. The path check resolves and then
+Three things these guards do **not** cover. The path check resolves and then
 reads, so a symlink swapped in between the two calls wins the race — an attacker
-who can do that already has write access to the same tree. And a heading that
+who can do that already has write access to the same tree. A heading that
 begins with a completed word but means something else (`## Done criteria`) is
-read as an archive; the anchor stops `## Not completed`, not this.
+read as an archive; the anchor stops `## Not completed`, not this. And the list
+caps bound the **config**, not the file being measured: a repo whose `TODOS.md`
+holds a million headings still pays for every one of them, and nothing here
+caps a target file's size or heading count.
 
 ## Splitting and archiving
 

@@ -51,7 +51,10 @@ repo root:
 ```
 
 `targets` accepts files or directories. Every key is optional and overrides one
-default; an unknown key is an error, not a silent no-op.
+default; an unknown key is an error, not a silent no-op, and so is a wrongly
+typed value. `completedHeadings` and `inlineDoneMarkers` take at most 100
+entries of at most 64 characters — they hold words, and an unbounded word list
+is a real cost, not a stylistic one.
 
 **No key takes a regex** — `.todokeeper.json` ships inside the repo being
 scanned, and a regex from an untrusted file can hang the run unstoppably.
@@ -211,6 +214,12 @@ working; it needs a new style added to `ENTRY_STYLES` in `lib.mjs`.
 it means something else — `## Done criteria` counts as completed. Anchoring
 keeps `## Not completed` out; it cannot keep this out. Check the heading list a
 run reports before trusting its completed mass.
+
+**The word-list caps bound the config, not the file.** `completedHeadings` is
+lowercased once per word per heading, so 100 words of 64 characters is the
+ceiling on one half of a multiplication whose other half — how many headings the
+target file holds — nothing here bounds at all. A pathological `TODOS.md` is
+still slow to measure.
 
 **`dead.mjs` reads the repo into memory and stops at 256MB.** When it stops it
 says how many files it skipped, and `ABSENT` is then incomplete by that many

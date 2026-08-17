@@ -85,6 +85,16 @@ run the three scripts against this repo and they should report something sane.
   without reopening the silent one. Nobody has asked for it yet.
   (security review, 2026-08-17)
 
+- **The list caps bound the config; nothing bounds the target file.**
+  `completedHeadings` is capped at 100 words of 64 characters, but its cost is
+  `headings × Σ(word lengths)` and the heading count is read from the file being
+  measured, which has no cap of any kind. A `TODOS.md` with a million headings is
+  still slow, and unlike the config half it is not obviously attacker-controlled —
+  a repo's own file is a weaker threat than a config a contributor can add in a
+  PR, which is why only one half was closed. A cap on target size would need a
+  skip-and-announce path like `dead.mjs`'s, not a hard refusal.
+  (security review, 2026-08-17)
+
 - **The 256MB read budget in `dead.mjs` is a guess, not a measurement.** It was
   chosen to sit below a default Node heap; nothing measured what the scanned
   repos actually peak at, so the headroom is unknown in both directions. No repo
@@ -93,6 +103,21 @@ run the three scripts against this repo and they should report something sane.
   (2026-08-17)
 
 ## Completed
+
+- **Removing the regex did not remove the cost — an unbounded word list hung a
+  run for 8.7 seconds.** `isCompletedHeading` lowercases every entry of
+  `completedHeadings` for every heading in every target file, so the cost is
+  `headings × Σ(word lengths)` and both halves came from an untrusted config. A
+  4.8MB `.todokeeper.json` (500 words × 10KB) against a 108KB file of 5,000
+  headings took 8.7s; the same 500 words at 10 characters took 0.167s, which
+  says the string length is the entire cost and the item count nearly free — so
+  the per-word cap of 64 is the fix and the 100-item cap is a second wall.
+  `targets` and `ignore` were left unbounded on purpose: one resolves each entry
+  once, the other becomes a Set, and neither multiplies. Closed alongside it:
+  `inlineDoneMarkers` and `splitThresholdBytes` were merged in with no type
+  check at all, so a non-array crashed with a raw V8 stack trace and a string
+  threshold silently reported every file as under it. Both now fail through
+  `loadConfigOrExit` like every other key. (security review, 2026-08-17)
 
 - **A repo could make todokeeper read and print files outside itself.**
   `resolveTargets` built `join(root, target)` and read it, so `"../secrets"` in
