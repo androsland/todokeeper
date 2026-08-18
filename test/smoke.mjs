@@ -144,6 +144,14 @@ function testClassifier(root) {
     ['example.com', 'external'],
     ['origin/main', 'ref'],
     ['two words here', 'prose'],
+    // Leading slash resolves against the tree rather than guessing from shape.
+    // `/el/index.html` is a URL, not a repo file, and used to reach the path
+    // branch purely because it carried a known extension; `/src/app.ts` is the
+    // repo-root convention and must survive. `/docs` is a real directory and
+    // still reads as a route on purpose — see the FILES-only note in lib.mjs.
+    ['/el/index.html', 'route'],
+    ['/src/app.ts', 'path'],
+    ['/docs', 'route'],
   ];
 
   for (const [input, want] of cases) {
@@ -159,6 +167,15 @@ function testClassifier(root) {
     check(`classify \`${input}\` has needle`, got && typeof got.needle === 'string');
     check(`classify \`${input}\` echoes raw`, got && got.raw === input);
   }
+
+  // `kind: 'path'` alone does not prove the leading slash was stripped for the
+  // lookup — an unresolved path is still a path, and it is exactly the shape
+  // that lands in PATH-MISSING. Assert the resolution itself. Nothing in the
+  // measured corpus takes this branch, so this test is its only coverage.
+  const rooted = classifyReferent('/src/app.ts', index);
+  check('classify `/src/app.ts` resolves to the root-relative file',
+    rooted && rooted.resolved === 'src/app.ts',
+    `got resolved=${rooted ? String(rooted.resolved) : 'none'}`);
 
   // Classifying with no index must not throw — the documented degraded mode.
   for (const [input] of cases) {

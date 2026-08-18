@@ -966,9 +966,38 @@ export function classifyReferent(raw, index = null) {
   if (stripped.startsWith('@') || stripped.includes('://')) {
     return { kind: 'external', needle: stripped, raw };
   }
-  // A leading slash with no file extension is a site route, not a path in the
-  // tree — `/`, `/el/`, `/terms`. Reporting those as missing files is noise.
-  if (stripped.startsWith('/') && !KNOWN_EXT.test(stripped)) {
+  // A leading slash is a site route — `/`, `/el/`, `/terms` — unless the repo
+  // actually holds that path at its root.
+  //
+  // The extension alone used to decide this, which let every URL carrying one
+  // through to the path branch and out as PATH-MISSING. Measured across 11 real
+  // deferred-work files in 10 repos, 6,384 backticked spans: 136 distinct
+  // leading-slash referents, 128 already classified route, 4 prose, 4 path —
+  // and all 4 of the path ones false alarms, among them `/el/index.html`, a URL
+  // in a note about which pages an audit config covers. Not one leading-slash
+  // referent in the set resolved to a real repo file, so the extension
+  // carve-out bought no true positive at all.
+  //
+  // Resolving instead of guessing from shape is what keeps the repo-root
+  // convention alive: `/package.json` in a repo that HAS one is a path and
+  // still resolves. The lookup has to strip the slash itself rather than fall
+  // through to the index lookup below, which does not — `/src/app.ts` would
+  // miss `byPath`, miss the `endsWith('/' + lookup)` suffix test, and land in
+  // PATH-MISSING, which is the bucket this branch exists to keep clean.
+  //
+  // FILES only, never directories, and that is deliberate. Matching `dirs` too
+  // was tried and reverted: one corpus referent is a slash-command name that
+  // happens to share a name with a root directory, and directory matching
+  // turned it into a resolved path. Slash commands and site routes both look
+  // exactly like a root-directory reference and vastly outnumber it, so `dirs`
+  // costs more than it buys. A repo-root DIRECTORY written with a leading slash
+  // stays classified `route` — that is the known miss, and it is the quiet
+  // direction.
+  if (stripped.startsWith('/')) {
+    const rooted = stripped.slice(1);
+    if (index && index.byPath.has(rooted)) {
+      return { kind: 'path', needle: rooted, resolved: rooted, raw };
+    }
     return { kind: 'route', needle: stripped, raw };
   }
   if (/[*?]/.test(stripped) && stripped.includes('/')) {

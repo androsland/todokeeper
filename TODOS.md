@@ -2,10 +2,10 @@
 
 Deferred work for todokeeper itself. It is also the plugin's own test fixture —
 run the three scripts against this repo and they should report something sane. Note
-that six of its PATH-MISSING referents are quotations rather than claims — the
-entries below quote hypothetical and URL-shaped referents as evidence, and the tool
-has no way to tell a quoted example from a real one. That is the point of the first
-two entries, not a defect in the file.
+that four of its nine PATH-MISSING referents are quotations rather than claims — the
+entries below quote a hypothetical page and three measured ancestor paths as
+evidence, and the tool has no way to tell a quoted example from a real one. That is
+the point of the hypothetical-referent entry below, not a defect in the file.
 
 ## Referent classification
 
@@ -61,21 +61,6 @@ two entries, not a defect in the file.
   written to be plausible, so by construction it fits the tree exactly as well
   as a file that really was deleted.** Shipped as a named non-goal in SKILL.md
   and README.md instead of a heuristic.
-  (measured across 11 deferred-work files, 2026-08-18)
-
-- **A leading-slash referent WITH a file extension falls out of the route branch
-  and reports as a missing repo file.** `classifyReferent` calls a leading slash
-  a site route only when the string carries no known extension, so
-  `/el/index.html` — a URL, in a note about which pages an audit config covers —
-  becomes PATH-MISSING. Measured across the same 11 files: 133 distinct
-  leading-slash referents, 128 already classified `route`, 3 `prose`, and 2
-  `path` — and **both** of those 2 are false alarms, the other being a fixture
-  path quoted in a test-case description. **Zero leading-slash referents in the
-  corpus resolved to a real repo file**, so the extension carve-out bought no
-  true positive and cost two false ones. Not fixed here: dropping it is a
-  classifier change, and 11 files by one author is a correlated writing style —
-  someone who writes `/package.json` meaning repo-root would go newly silent.
-  Wants a second, unrelated corpus before the carve-out goes.
   (measured across 11 deferred-work files, 2026-08-18)
 
 ## Comment detection
@@ -277,6 +262,37 @@ two entries, not a defect in the file.
   (security review round 10, 2026-08-17)
 
 ## Completed
+
+- **The leading-slash carve-out is gone; a leading slash now resolves against the
+  tree instead of being guessed from shape.** `classifyReferent` called a leading
+  slash a site route only when the string carried no known extension, so every
+  URL that carried one — `/el/index.html`, in a note about which pages an audit
+  config covers — fell through to the path branch and out as PATH-MISSING. The
+  filed entry deferred the fix because "someone who writes `/package.json`
+  meaning repo-root would go newly silent", and that objection is what the shape
+  test could not answer. Resolving answers it: the branch is now conditional on
+  the file EXISTING, not on how it is written, so the repo-root convention keeps
+  working in a repo that has the file and nothing goes newly silent except a
+  leading-slash path that is genuinely deleted. Re-measured on the same corpus,
+  now 6,384 backticked spans across 10 repos: 136 distinct leading-slash
+  referents, 128 already `route`, 4 `prose`, 4 `path` — and all 4 of the `path`
+  ones false alarms. (The filed entry said 133 and 2; PR #1 grew the corpus by
+  quoting two more of them as its own evidence.) After: 132 `route`, 4 `prose`,
+  **zero** `path`. Exactly 5 occurrences / 4 distinct referents change in the
+  whole corpus and nothing else moves; missing-path occurrences 132 → 127, and
+  this repo's own report 11 → 9.
+  **Two limits, written down because the diff cannot show them.** (1) The guard
+  matches FILES only, never directories: one corpus referent is a slash-command
+  name that shares a name with a root directory, and matching directories turned
+  it into a resolved path. Slash commands and site routes
+  both look exactly like a root-directory reference and vastly outnumber it, so
+  a repo-root DIRECTORY written with a leading slash stays `route` — a known
+  miss, in the quiet direction. (2) The guard's positive branch fires nowhere in
+  the corpus, so `test/smoke.mjs` is its only coverage; the three cases added
+  there (`/el/index.html` → route, `/src/app.ts` → path with `resolved` asserted,
+  `/docs` → route) were confirmed to fail against the old classifier before they
+  were kept.
+  (measured across 11 deferred-work files in 10 repos, 2026-08-19)
 
 - **One High finding, and proving it uncovered a second bug that nine rounds of
   review had read straight past.** (1) *`dead.mjs` never imported `MAX_ENTRIES`.*
