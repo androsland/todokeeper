@@ -1,7 +1,11 @@
 # TODOS
 
 Deferred work for todokeeper itself. It is also the plugin's own test fixture —
-run the three scripts against this repo and they should report something sane.
+run the three scripts against this repo and they should report something sane. Note
+that six of its PATH-MISSING referents are quotations rather than claims — the
+entries below quote hypothetical and URL-shaped referents as evidence, and the tool
+has no way to tell a quoted example from a real one. That is the point of the first
+two entries, not a defect in the file.
 
 ## Referent classification
 
@@ -27,6 +31,52 @@ run the three scripts against this repo and they should report something sane.
   parsing surface outweighs the payoff, and the cost is bounded to extra entries
   in a bucket a human reads. Revisit if a non-JS repo becomes a primary consumer.
   (decided, 2026-08-16)
+
+- **A referent the sentence never claimed exists still reports as missing, and
+  nothing separates it from one that really was deleted.** "So a
+  `src/pages/privacy.astro` added tomorrow gets a CSP hash check and nothing
+  else" posits a page that does not exist, should not exist, and whose absence
+  is the point of the clause — and it lands in PATH-MISSING and REFERENT MISSING
+  like any other. It is **not** the fix-inversion non-goal: there the referent's
+  absence tracks the entry's open/closed state, so the signal is inverted but
+  real, whereas here the referent is expected to be absent in both states and
+  resolving the entry never clears it. It is **not** the residue paragraph
+  either: the string IS a path, correctly typed and correctly reported absent,
+  so no confidence tier in `classifyReferent` reaches it — a tier ranks how
+  likely a string is to be a path, and this one certainly is. Measured across 11
+  deferred-work files on hand: 126 missing-path occurrences, 87 distinct, across
+  8 repos — **14 of the 87, in four unrelated repos**, are posited rather than
+  real (a page someone might add, an illustrative placeholder, benchmark fixture
+  paths, filenames in a described upload).
+  **Detection was tried and does not work.** An indefinite article before the
+  referent fires on 8 of the 126 missing and 5 of the 1,138 present — an article
+  is a fact about English, not about modality — and only one of those 8 is this
+  shape. Tightening to article-plus-addition-verb ("a … added") scores 1 of
+  126 and 0 of 1,138: precision 1.0 at a recall of the single instance that
+  suggested the rule, which is a sample wearing a spec's clothes. The structural
+  cue is worse, because it is anti-diagnostic — scoring deepest existing
+  ancestor plus same-extension siblings, the hypothetical page scores
+  `src/pages` + 3, a genuinely renamed-away file scores `src/lib` + 85, and a
+  genuinely deleted one scores `src/lib/media` + 19. **A hypothetical path is
+  written to be plausible, so by construction it fits the tree exactly as well
+  as a file that really was deleted.** Shipped as a named non-goal in SKILL.md
+  and README.md instead of a heuristic.
+  (measured across 11 deferred-work files, 2026-08-18)
+
+- **A leading-slash referent WITH a file extension falls out of the route branch
+  and reports as a missing repo file.** `classifyReferent` calls a leading slash
+  a site route only when the string carries no known extension, so
+  `/el/index.html` — a URL, in a note about which pages an audit config covers —
+  becomes PATH-MISSING. Measured across the same 11 files: 133 distinct
+  leading-slash referents, 128 already classified `route`, 3 `prose`, and 2
+  `path` — and **both** of those 2 are false alarms, the other being a fixture
+  path quoted in a test-case description. **Zero leading-slash referents in the
+  corpus resolved to a real repo file**, so the extension carve-out bought no
+  true positive and cost two false ones. Not fixed here: dropping it is a
+  classifier change, and 11 files by one author is a correlated writing style —
+  someone who writes `/package.json` meaning repo-root would go newly silent.
+  Wants a second, unrelated corpus before the carve-out goes.
+  (measured across 11 deferred-work files, 2026-08-18)
 
 ## Comment detection
 
