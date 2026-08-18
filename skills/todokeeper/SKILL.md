@@ -183,6 +183,34 @@ whether such a commit is in range before trusting a clean sweep.
 correct, and would report PATH-EXISTS the moment it is done. Read the direction
 of the sentence before believing the bucket.
 
+**An entry that names a HYPOTHETICAL referent reports its absence forever, and
+that is neither the inversion above nor the classification residue below.** "So a
+`src/pages/privacy.astro` added tomorrow gets a CSP hash check and nothing else"
+names a file that does not exist, should not exist, and whose absence is the
+point of the clause — and it lands in PATH-MISSING and REFERENT MISSING like a
+deleted file. Unlike the fix-inversion case, the absence tracks nothing: the
+entry can be resolved, deferred or rewritten and the referent is still expected
+to be gone. Unlike the classification residue, nothing is misclassified — the
+string is a path, it is typed as one correctly, and it genuinely is not in the
+tree. The same shape covers an illustrative placeholder in a convention note
+and a fixture path quoted in a benchmark result; measured across 11 real
+deferred-work files, 14 of the 87 distinct missing-path referents, in four
+unrelated repos, are posited rather than real. **Detection was tried against
+that corpus and does not work.** An indefinite article before the referent
+fires on 8 of 126 missing referents and 5 of 1,138 present ones, because an
+article is a fact about English rather than about modality; tightening it until
+it is precise leaves it matching exactly the one instance that suggested it.
+Structure is anti-diagnostic — scoring the deepest existing ancestor directory
+and its same-extension siblings, the hypothetical page and a genuinely deleted
+file both score high, because **a hypothetical path is written to be plausible
+and so fits the tree exactly as well as a file that really was deleted.** Two
+things this limit does not say. It is not licence to dismiss the bucket: a
+genuinely deleted file reads the same way and is the true positive PATH-MISSING
+exists for, so the entry still has to be read. And it says nothing about a
+referent that exists but lives outside this tree — another repo's file, a build
+artifact, a file uploaded at runtime — which reports identically and is a
+different fact about a different world.
+
 **Referent classification is heuristic and its residue is one-directional.** Line
 citations, elided paths, package internals and branch names are filtered; a
 slash-separated list of identifiers, and a path into a library the repo does not

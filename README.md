@@ -139,6 +139,20 @@ An unstated limit reads as a claim of coverage, so:
 - **An entry naming its FIX rather than its problem inverts every signal.**
   "Add `.github/workflows`" reports REFERENT MISSING while it is open and
   correct.
+- **An entry naming a HYPOTHETICAL referent reports its absence forever.** "So a
+  `src/pages/privacy.astro` added tomorrow gets a CSP hash check and nothing
+  else" names a file that does not exist, should not exist, and whose absence is
+  the point of the sentence. It is not the inversion above — the absence tracks
+  nothing, so resolving the entry never clears it — and nothing is
+  misclassified: the string is a path and genuinely is not there. Measured
+  across 11 real deferred-work files, 14 of 87 distinct missing-path referents
+  are posited rather than real. **It is not detectable**: an indefinite article
+  before the referent fires on 8 of 126 missing and 5 of 1,138 present, and
+  structure is anti-diagnostic, because a hypothetical path is written to be
+  plausible and so fits the tree exactly as well as a file that really was
+  deleted. This is no reason to dismiss the bucket — a deleted file reads the
+  same way and is what PATH-MISSING is for — and it says nothing about a
+  referent that exists somewhere other than this tree.
 - **Dependency names come from `package.json` and `composer.json` only** — a
   Rust, Go or Python repo gets no dependency filter. The cost is bounded to extra
   entries in a bucket a human reads.
