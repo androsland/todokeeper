@@ -121,16 +121,21 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   when the regex went away and are exercised only by hand.
   (2026-08-16, revised 2026-08-17)
 
-- **`test/smoke.mjs` covers the branches, not the answers.** It executes every
-  `classifyReferent` branch and runs all four scripts end to end against a
+- **`test/smoke.mjs` covers the branches, and exactly two answers.** It executes
+  every `classifyReferent` branch and runs all four scripts end to end against a
   fixture, which is what a rename that broke the glob branch needed and did not
-  have. What it still does not do: assert that any verdict is CORRECT. The
-  fixture is checked for well-formedness, so a change that reclassified every
-  symbol as prose passes it. That is still caught only by diffing `--json`
-  against real repos by hand, which is the step this entry has not yet replaced.
+  have. The call-form phase added the first assertions that a verdict is
+  CORRECT rather than merely well-formed: a live call reads CODE, a tombstoned
+  one reads COMMENT-ONLY. Measured with the mutation this entry used to name —
+  reclassifying both symbol returns as prose — the suite now fails 7 checks
+  against 4 before, and 3 of that 4 were collateral, tripping only because the
+  report empties. Every other verdict is still shape-checked only, so the tier
+  ladder below CODE and every path verdict are caught only by diffing `--json`
+  against real repos by hand, which is the step this entry has not yet
+  replaced.
   It also skips both count caps deliberately — reaching them costs 8.2s and 39s,
   which is a benchmark, not a smoke test, so nothing would notice if a cap were
-  deleted. (2026-08-16, narrowed 2026-08-17)
+  deleted. (2026-08-16, narrowed 2026-08-17, narrowed 2026-08-19)
 
 - **`suspect` is only as good as the git history it reads.** It was unexercised
   entirely until a repo with month-old entries was tested — the first test repo's

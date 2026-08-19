@@ -28,9 +28,14 @@
  *    respectively; that is a benchmark, not a smoke test. The caps are proven
  *    by hand and recorded in TODOS.md, and nothing here would notice if one
  *    were deleted.
- *  - It asserts that verdicts are WELL-FORMED, not that they are CORRECT. The
- *    fixture is small enough to reason about, but this is not a corpus test:
- *    a change that reclassified every symbol as prose would pass here and be
+ *  - It asserts that verdicts are WELL-FORMED, with two exceptions: the
+ *    call-form pair asserts CODE and COMMENT-ONLY by name, so a symbol tier
+ *    that stopped separating a live call from a tombstone would fail here.
+ *    Everything else is shape-checked only, and the fixture is small enough to
+ *    reason about rather than large enough to be a corpus. Measured, not
+ *    assumed: reclassifying both symbol returns as prose fails 7 checks here
+ *    against 4 on the tree before this phase existed — and 3 of those 4 are
+ *    collateral, tripping only because the report empties. The rest is still
  *    caught only by the real-repo parity diff described above.
  *  - The control-byte scan covers the four `scripts/*.mjs` and this file. Not
  *    SKILL.md, not README.md, not any config or fixture — and nothing runs this
