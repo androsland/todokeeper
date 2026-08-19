@@ -261,7 +261,112 @@ the point of the hypothetical-referent entry below, not a defect in the file.
   `sh -c '... "$1" ... "$2"' -- "$dead" "$root"`.
   (security review round 10, 2026-08-17)
 
+## Enumeration
+
+- **A well-formed `ignore` entry naming a path that does not exist is still a
+  silent no-op.** (found fixing the gitignore defect, 2026-08-19) `loadConfig`
+  now rejects every shape that CANNOT match — glob, absolute, backslash, `..`,
+  empty, padded — but `web/test-resluts` passes all of them and excludes
+  nothing, which is the same failure one level in. It is detectable, unlike the
+  shapes above: after `listFiles` has run, an entry whose `names` member matches
+  no segment and whose `paths` member prefixes no path matched nothing, and a
+  one-line stderr note naming it would close this. Not done here because the
+  check belongs after enumeration rather than at config load, and wiring a
+  load-time validator to a post-enumeration fact is a bigger change than the
+  defect it closes. **Do not turn it into an error** — a repo legitimately
+  carries an `ignore` entry for a directory it has not created yet, or one
+  that exists only on another branch.
+
+- **Only one of the five fallback branches is tested.** (found fixing the
+  gitignore defect, 2026-08-19) `gitEnumerate` returns null — and the plain walk
+  runs — on a non-git root, a missing git binary, a root below the work tree's
+  toplevel, a listing past `GIT_LIST_BUFFER`, and any other git failure.
+  `test/smoke.mjs` exercises the first only. The toplevel one is the one worth
+  covering: it is reachable by an ordinary `--root web` on a monorepo, and it is
+  the branch whose absence would be least visible, because the walk still
+  produces a plausible-looking report. The other three need a doctored PATH, an
+  800,000-file fixture and a fault injector respectively, and are not worth it.
+
+- **`gitIgnoringPrefix` only knows about ignored paths that exist on disk.**
+  (found fixing the gitignore defect, 2026-08-19) The ignored set comes from
+  `git ls-files --others --ignored --directory`, which lists what is PRESENT
+  and ignored. So a referent naming a gitignored file that has since been
+  deleted reports `PATH-MISSING` rather than `PATH-NOT-SCANNED`. That is the
+  literally true answer — the file really is gone — but the reason the tool
+  gives for knowing it is not the reason it actually has, and if the parent
+  directory still exists the prefix walk covers it while a fully-removed tree
+  does not. `git check-ignore --stdin -z` over the unresolved referents would
+  answer exactly, in one child process. Low value: the verdict is already
+  correct in both cases.
+
+- **The git listing is cached per root for the life of the process and never
+  invalidated.** (found fixing the gitignore defect, 2026-08-19) Correct for
+  three one-shot CLIs, and it is what keeps `dead.mjs` from shelling out four
+  times for the same answer. Wrong the moment `lib.mjs` is imported into
+  anything long-lived — a watcher, a language server, a test harness that
+  mutates a fixture between calls — where it would serve a listing from before
+  the mutation. Nothing warns. If that use ever arrives, key the cache on the
+  index mtime or expose a reset.
+
+- **Personal data that was never gitignored and never named in `ignore` is still
+  read, and this is permanent.** (2026-08-19) Honouring `.gitignore` closes the
+  case where a repo's only control was that one line — measured at 149 files on
+  one real repo. It does nothing for a directory of client records that was
+  simply committed, and there is no property of such a file that distinguishes
+  it from source. Stated in `README.md` and `SKILL.md` as a non-goal rather than
+  left to be inferred. **Do not file a heuristic for it** — a scanner guessing at
+  which committed files are "personal" would be wrong in both directions and
+  would make the honest limit above read as covered.
+
 ## Completed
+
+- **SHIPPED 2026-08-19 — the scan asks git what is in the repo, so `.gitignore`
+  is honoured; and an `ignore` entry that cannot match is now an error instead of
+  silence.** Three defects, filed against this tool from the repo it was pointed
+  at. (1) *`walkFiles` was a bare `readdirSync` recursion that consulted nothing
+  but its own `ignore` list.* On a client repo whose `interview/` directory holds
+  recordings, transcripts and a customer CSV export — protected by one
+  `.gitignore` line — the walk read **149 of those files** on default config;
+  measured before and after, the git enumeration reads **0**. `listFiles` now
+  takes the file set from `git ls-files --cached --others --exclude-standard -z`
+  when the root is the toplevel of a work tree, so every `.gitignore` at every
+  depth applies along with `.git/info/exclude` and the global excludes file.
+  `-z` is load-bearing rather than tidy: without it git quotes any non-ASCII
+  path, and a repo that is bilingual by intent would have hit that on its first
+  Greek filename. Nothing here parses gitignore syntax — the semantics are not
+  small, and a parser that gets one of them wrong fails in the direction that
+  reads the file it was meant to skip. (2) *A multi-segment `ignore` entry
+  matched nothing, at any depth, in silence.* `web/test-results` was compared
+  against basenames and sat in `.todokeeper.json` reading exactly like
+  protection. `ignore` now takes two shapes through one compiled matcher —
+  a bare name at any depth, a `/`-bearing name as a root-anchored path prefix —
+  and the SAME matcher serves both the enumeration and `ignoringSegment`, which
+  is what stops the two disagreeing and reporting an unindexed file as
+  `PATH-MISSING`. (3) *No pattern syntax, also silently.* Dissolved rather than
+  built: `*.log` and `.env.*` are `.gitignore`'s job and it does them correctly,
+  so a glob in `ignore` is now rejected at load, by name, with a message saying
+  where to put it — as are an absolute path, a backslash, `..`, and an empty or
+  padded entry. A fourth, unfiled bug fell out of the rewrite: a tracked file
+  deleted from disk is still in git's index, so each listed path is stat'ed
+  before it enters the index, and an entry naming it no longer reads as
+  resolved.
+
+  `PATH-NOT-SCANNED` carries a third provenance, `gitignore`, kept separate from
+  `config` because the two send a reader to different files — and checked AFTER
+  the `ignore` list so `node_modules`, which is both a todokeeper default and
+  gitignored nearly everywhere, keeps its quiet bucket instead of drowning the
+  loud one. Both reports name the enumeration mode every run: a downgrade to the
+  plain walk is announced, because a report that does not say which mode it ran
+  in claims a coverage it may not have.
+
+  Proven by regression, three times, rather than by assertion: with
+  `gitEnumerate` stubbed to null 9 checks red including the canary; with the
+  path-prefix arm removed 3 red; with `ignoreEntryProblem` stubbed 7 red. The
+  canary pair is the shape that matters — a string inside the gitignored file
+  and a string inside a scanned one, asserted absent and present in the same
+  `--json` output, so neither half can pass on an empty scan. Suite 90 -> 125
+  checks. Deferrals in `## Enumeration` above.
+
 
 - **The leading-slash carve-out is gone; a leading slash now resolves against the
   tree instead of being guessed from shape.** `classifyReferent` called a leading

@@ -106,10 +106,12 @@ for (const abs of targets) {
             raw,
             status: c.ignored ? 'not-scanned' : 'missing',
             // Which side put it out of reach: todokeeper's defaults, or the
-            // audited repo's own `.todokeeper.json`. Same bucket, and only the
-            // second one is the audited party choosing what the audit sees.
+            // audited repo's own `.todokeeper.json` / `.gitignore`. Same
+            // bucket, and only the second one is the audited party choosing
+            // what the audit sees.
             ignoredBy: c.ignoredBy ?? null,
             ignoredByConfig: c.ignoredByConfig ?? false,
+            ignoredBySource: c.ignoredBySource ?? null,
             commit: null,
           });
           continue;
@@ -219,12 +221,13 @@ const suppressed = results.flatMap(
 );
 if (suppressed.length) {
   console.log(`EXCLUDED BY THIS REPO'S OWN CONFIG (${suppressed.length}) — not by todokeeper's defaults`);
-  console.log('`.todokeeper.json` ships inside the repo being audited, so this bucket is the');
-  console.log('audited party choosing what the audit may see. Read these before treating a');
-  console.log('`not-scanned` referent as out of scope:');
+  console.log('`.todokeeper.json` and `.gitignore` both ship inside the repo being audited, so');
+  console.log('this bucket is the audited party choosing what the audit may see. Read these');
+  console.log('before treating a `not-scanned` referent as out of scope:');
   for (const s of suppressed) {
+    const where = s.ref.ignoredBySource === 'gitignore' ? '.gitignore' : '.todokeeper.json';
     console.log(`  ${safeField(s.file)} :: ${safeField(short(s.lead))}`);
-    console.log(`    \`${safeField(s.ref.raw)}\` — under \`${safeField(s.ref.ignoredBy)}\``);
+    console.log(`    \`${safeField(s.ref.raw)}\` — under \`${safeField(s.ref.ignoredBy)}\` (${where})`);
   }
   console.log('');
 }

@@ -39,6 +39,14 @@
  *    `stale.mjs` shells out to `git log -S`; a git old enough to lack a flag it
  *    uses fails here as a test error, which is the right outcome but is not the
  *    same as supporting that git.
+ *  - The enumeration phases cover a work-tree root and a non-git root. They do
+ *    NOT cover a root BELOW a work tree's toplevel, a git binary that is
+ *    missing rather than failing, a listing past the 64MB buffer, or a
+ *    submodule gitlink — all four take the same fallback branch, and only the
+ *    non-git one is exercised here.
+ *  - Nothing here sees personal data that was never gitignored and never named
+ *    in `ignore`. No test can: there is no property of such a file that
+ *    distinguishes it from source.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -51,6 +59,8 @@ import {
   DEFAULTS, classifyReferent, buildFileIndex, loadConfig,
   MAX_ENTRIES as DEAD_ENTRY_CAP, MAX_FROM as DEAD_FROM_CAP,
 } from '../scripts/lib.mjs';
+
+const IGNORED_DIR = 'interview';
 
 const SCRIPTS = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts');
 
@@ -440,6 +450,228 @@ function testPipedJson() {
   }
 }
 
+// ------------------------------------- 8. .gitignore is honoured, and it shows
+
+/**
+ * The fixture for the enumeration phases. Two things live in it that no
+ * `.todokeeper.json` mentions:
+ *
+ *  - `interview/`, gitignored and holding a canary string. It is named after
+ *    the real directory that prompted this: a repo whose only control on client
+ *    personal data was one `.gitignore` line, scanned in full by a tool that
+ *    walked the filesystem and never asked git anything.
+ *  - `web/test-results`, excluded by a PATH-shaped `ignore` entry. That shape
+ *    used to match nothing at any depth, in silence.
+ *
+ * `init` decides whether it becomes a git work tree, because the two modes are
+ * each other's control: the same tree, enumerated both ways, must disagree
+ * about `interview/` and agree about everything else. An assertion that the
+ * gitignored file is absent proves nothing on its own — an empty index
+ * satisfies it — so every phase below pairs it with a file that must be there.
+ */
+function buildEnumerationFixture({ init }) {
+  const root = mkdtempSync(join(tmpdir(), 'todokeeper-enum-'));
+  const put = (p, body) => {
+    mkdirSync(join(root, dirname(p)), { recursive: true });
+    writeFileSync(join(root, p), body);
+  };
+
+  put('.gitignore', `${IGNORED_DIR}/\n*.log\n`);
+  put('src/app.ts', "export const scannedCanary = 'CANARY-SCANNED-4417';\n");
+  put('src/removed.ts', 'export const removed = 1;\n');
+  put(`${IGNORED_DIR}/notes.md`, "const ignoredCanary = 'CANARY-IGNORED-9002';\n");
+  put('web/test-results/report.html', '<p>ignoredByPath</p>\n');
+  // The control for the path entry: same basename, different parent. A
+  // path-shaped entry that quietly degraded to a basename match would take
+  // this one too, and the exclusion would be wider than the config said.
+  put('other/test-results/keep.html', '<p>keptByPath</p>\n');
+
+  put('.todokeeper.json', `${JSON.stringify({
+    ignore: [...DEFAULTS.ignore, 'web/test-results'],
+  }, null, 2)}\n`);
+
+  put('TODOS.md', [
+    '# TODOS',
+    '',
+    '## Open',
+    '',
+    '- **A scanned symbol** — `scannedCanary` is live.',
+    '- **A symbol only the ignored tree defines** — `ignoredCanary` should not be read.',
+    '- **A path under a gitignored dir** — `interview/notes.md` holds client notes.',
+    '- **A path under a path-ignored dir** — `web/test-results/report.html` is build output.',
+    '- **A path the ignore list does not cover** — `other/test-results/keep.html` stays.',
+    '- **A tracked file deleted from disk** — `src/removed.ts` went away.',
+    '',
+  ].join('\n'));
+
+  if (init) {
+    const git = (...args) => execFileSync('git', args, { cwd: root, stdio: 'pipe' });
+    git('init', '-q');
+    git('config', 'user.email', 'smoke@example.invalid');
+    git('config', 'user.name', 'smoke');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'fixture');
+  }
+  // After the commit on purpose: the file is in the index and gone from disk,
+  // which is the state `git ls-files --cached` reports and a stat has to catch.
+  rmSync(join(root, 'src/removed.ts'));
+  return root;
+}
+
+function testGitEnumeration() {
+  const root = buildEnumerationFixture({ init: true });
+  try {
+    const config = loadConfig(root);
+    const index = buildFileIndex(root, config.ignore);
+
+    check('a git work tree enumerates through git', index.mode === 'git',
+      `got ${JSON.stringify(index.mode)}`);
+
+    // The pair. Neither half means anything alone.
+    check('a gitignored file is not indexed',
+      !index.byPath.has(`${IGNORED_DIR}/notes.md`));
+    check('...while a tracked file next to it is',
+      index.byPath.has('src/app.ts'),
+      'positive control — without this the check above passes on an empty index');
+
+    const ignored = classifyReferent(`${IGNORED_DIR}/notes.md`, index);
+    check('a referent under a gitignored dir is NOT-SCANNED, not MISSING',
+      ignored.ignored === true && ignored.resolved === null,
+      `ignored=${ignored.ignored} resolved=${JSON.stringify(ignored.resolved)}`);
+    check('...and names the gitignored directory', ignored.ignoredBy === IGNORED_DIR,
+      `got ${JSON.stringify(ignored.ignoredBy)}`);
+    check('...and names .gitignore as the source', ignored.ignoredBySource === 'gitignore',
+      `got ${JSON.stringify(ignored.ignoredBySource)}`);
+    check('...and lands in the loud bucket, not the defaults one',
+      ignored.ignoredByConfig === true);
+
+    // A path-shaped `ignore` entry, and the sibling that proves it is anchored.
+    const byPath = classifyReferent('web/test-results/report.html', index);
+    check('a path-shaped ignore entry excludes its subtree',
+      byPath.ignored === true && byPath.ignoredBy === 'web/test-results',
+      `ignored=${byPath.ignored} by=${JSON.stringify(byPath.ignoredBy)}`);
+    check('...reported as config, not gitignore', byPath.ignoredBySource === 'config',
+      `got ${JSON.stringify(byPath.ignoredBySource)}`);
+    check('...and does not degrade to a basename match',
+      index.byPath.has('other/test-results/keep.html'),
+      'positive control — `web/test-results` must not take `other/test-results`');
+
+    // A tracked file deleted from disk is in git's index and not on disk. It
+    // must not read as present, or an entry naming it looks resolved forever.
+    const deleted = classifyReferent('src/removed.ts', index);
+    check('a tracked-but-deleted file is not indexed', !index.byPath.has('src/removed.ts'));
+    check('...and classifies as missing rather than not-scanned',
+      deleted.resolved === null && !deleted.ignored,
+      `resolved=${JSON.stringify(deleted.resolved)} ignored=${deleted.ignored}`);
+
+    // The whole point, end to end: the bytes inside the gitignored file must
+    // not reach this tool's output. The paired canary is what makes it a test
+    // rather than a tautology — one is read and printed, one is not.
+    const json = execFileSync('node', [join(SCRIPTS, 'dead.mjs'), '--root', root, '--json'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    check('dead.mjs --json declares the enumeration',
+      JSON.parse(json).enumeration === 'git');
+    check('the scanned canary reaches the report', json.includes('CANARY-SCANNED-4417'),
+      'positive control — without this the next check passes on any empty scan');
+    check('the gitignored canary does not', !json.includes('CANARY-IGNORED-9002'),
+      'a .gitignore line is the only control on personal data in some repos');
+
+    const text = execFileSync('node', [join(SCRIPTS, 'dead.mjs'), '--root', root],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    check('the report says .gitignore put the referent out of scope',
+      text.includes('(.gitignore)'),
+      'a reader sent to .todokeeper.json would not find the line');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// ------------------------------- 9. the fallback, and that it is announced
+
+/**
+ * The same tree with no `.git`. This is the control for phase 8 — it proves the
+ * git arm changed the answer rather than agreeing with the walk by accident —
+ * and it pins the downgrade's own contract: the walk reads what `.gitignore`
+ * excludes, so the report has to say so out loud.
+ */
+function testWalkFallback() {
+  const root = buildEnumerationFixture({ init: false });
+  try {
+    const config = loadConfig(root);
+    const index = buildFileIndex(root, config.ignore);
+
+    check('a non-git root falls back to the walk', index.mode === 'walk',
+      `got ${JSON.stringify(index.mode)}`);
+    check('the walk DOES read a gitignored file',
+      index.byPath.has(`${IGNORED_DIR}/notes.md`),
+      'the contrast with phase 8 is the evidence that git enumeration did the work');
+    check('the walk still honours a path-shaped ignore entry',
+      !index.byPath.has('web/test-results/report.html')
+      && index.byPath.has('other/test-results/keep.html'),
+      'one compiled matcher serves both modes');
+
+    const text = execFileSync('node', [join(SCRIPTS, 'dead.mjs'), '--root', root],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    check('the fallback is announced, not silent',
+      text.includes('not a git work tree') && text.includes('.gitignore was'),
+      'a downgrade nobody is told about reads as coverage');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// ------------------------------ 10. an ignore entry that cannot match is an error
+
+/**
+ * Each rejected shape used to be accepted and match nothing, at any depth, with
+ * no output — which is the failure this whole change exists to remove. The
+ * final case is the positive control: the shape that USED to be a silent no-op
+ * and now works must not be caught by the validator built to reject the others.
+ */
+function testIgnoreValidation() {
+  const root = mkdtempSync(join(tmpdir(), 'todokeeper-ignore-'));
+  try {
+    const write = (ignore) => writeFileSync(
+      join(root, '.todokeeper.json'), `${JSON.stringify({ ignore }, null, 2)}\n`,
+    );
+    const rejects = (label, entry, wanted) => {
+      write([entry]);
+      let message = null;
+      try {
+        loadConfig(root);
+      } catch (err) {
+        message = err.message;
+      }
+      check(`ignore rejects ${label}`, message !== null, 'it was accepted');
+      if (message) {
+        check(`...naming the entry and the reason for ${label}`,
+          message.includes(JSON.stringify(entry)) && message.includes(wanted),
+          `got ${JSON.stringify(message)}`);
+      }
+    };
+
+    rejects('a glob', '*.log', 'glob');
+    rejects('a directory glob', 'web/**/tmp', 'glob');
+    rejects('an absolute path', '/etc/passwd', 'absolute');
+    rejects('a backslash path', 'web\\test-results', 'backslash');
+    rejects('an escaping path', '../secrets', '..');
+    rejects('an empty entry', '', 'empty');
+    rejects('a padded entry', ' node_modules ', 'whitespace');
+
+    write(['node_modules', 'web/test-results']);
+    let ok = true;
+    try {
+      loadConfig(root);
+    } catch {
+      ok = false;
+    }
+    check('ignore accepts a name and a repo-relative path', ok,
+      'positive control — the validator must not reject the shape this change added');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 // -------------------------------------------------------------------- driver
 
 let root;
@@ -457,6 +689,9 @@ try {
     ['control-bytes', testNoControlBytes],
     ['counts', testCounts],
     ['piped-json', testPipedJson],
+    ['git-enumeration', testGitEnumeration],
+    ['walk-fallback', testWalkFallback],
+    ['ignore-validation', testIgnoreValidation],
   ]) {
     try {
       phase(root);

@@ -97,7 +97,9 @@ heading. Otherwise, `.todokeeper.json` at the repo root:
 }
 ```
 
-`targets` takes files or directories. Every key is optional; an unknown key is
+`targets` takes files or directories; `ignore` takes literal names and
+repo-relative paths, never globs — see [what gets scanned](#what-gets-scanned).
+Every key is optional; an unknown key is
 an error rather than a silent no-op, and so is a value of the wrong type — a
 `splitThresholdBytes` given as a string used to pass silently and report every
 file as under the threshold. `completedHeadings` and `inlineDoneMarkers` hold at
@@ -116,6 +118,66 @@ first in every case, so a `> - **…**` archive parses without configuration.
 holds finished work means the heading word is missing from `completedHeadings`.
 A section reading as 0 entries means `entryStyles` does not name how this repo
 writes an entry.
+
+## What gets scanned
+
+**`.gitignore` is honoured, by asking git.** When the root is a git work tree,
+the file set comes from `git ls-files --cached --others --exclude-standard` —
+so every `.gitignore` at every depth applies, along with `.git/info/exclude` and
+your global excludes file. Nothing here parses gitignore syntax; git does, and
+the reports say which enumeration ran:
+
+```
+Enumeration: git — .gitignore, .git/info/exclude and your global excludes all applied.
+```
+
+This used to be a plain directory walk, and the gap it left was not theoretical.
+Measured on one real repo — a client project whose `interview/` directory holds
+recordings, transcripts and a customer CSV export, protected by a single
+`.gitignore` line — the walk read **149 of those files** on default config and
+the git enumeration reads **0**. Any repo whose personal data, `.env` files or
+credentials are kept out of git by `.gitignore` alone was in the same position.
+It is also why `ignore` needs no pattern support: `*.log` and `.env.*` are
+`.gitignore`'s job, and it does them correctly.
+
+**Outside a git work tree it falls back to the directory walk, and says so.**
+A non-git root, a missing git binary, a root below the work tree's toplevel, or
+a listing past the 64MB buffer all take the same branch:
+
+```
+Enumeration: directory walk — this root is not a git work tree, so .gitignore was
+NOT consulted and ignored files WERE read. `ignore` in .todokeeper.json is the only
+exclusion in effect here.
+```
+
+That is a downgrade, not an error — but it is announced every run, because a
+report that does not say which mode it ran in is claiming a coverage it may not
+have.
+
+**`ignore` is literal, and takes two shapes.** A bare name (`node_modules`)
+matches that segment at any depth, files as well as directories — which is how a
+repo keeps `.env` or `SESSION.md` out of the scan without inventing a directory
+for it. A name containing a `/` (`web/test-results`) matches that repo-relative
+path and everything under it, anchored at the root, so `other/test-results/` is
+untouched. The path form is new; before it, a multi-segment entry was compared
+against basenames, matched nothing at any depth, and sat in `.todokeeper.json`
+reading exactly like protection.
+
+**A shape that cannot match is now an error rather than silence.** A glob, an
+absolute path, a backslash, `..`, an empty string or a padded string is rejected
+at load with a message naming the entry and the reason. What no validator can
+see is a well-formed entry naming a path that does not exist: `web/test-resluts`
+passes every check and excludes nothing.
+
+**`ignore` REPLACES the defaults, it does not merge with them.** Restate the
+defaults you still want.
+
+Three things this does not cover, stated so the section is not read as more than
+it is. Personal data that was never gitignored and never named in `ignore` is
+still scanned, and nothing can detect it — there is no property that separates
+such a file from source. A tracked file matched by a `.gitignore` pattern is
+still tracked, so git lists it and so does this. And the enumeration bounds what
+this tool READS; it is not a security boundary for anything else on the machine.
 
 ## What it does NOT do
 
@@ -234,18 +296,22 @@ throughout. Each guard, and what it does not cover:
   announcement is the entire remedy. It also does
   nothing for the headings dimension, which multiplies against `completedHeadings`
   instead and has its own standing entry in `TODOS.md`.
-- **`ignore` is attacker-controlled, and a `PATH-NOT-SCANNED` verdict now says
-  which side put it there.** `.todokeeper.json` ships inside the repo being
-  audited, so one commit can delete a file an entry names *and* add that file's
-  directory to `ignore`; the referent then reports `PATH-NOT-SCANNED` instead of
-  `PATH-MISSING` — verified, not theorised. That is an honestly-labelled bucket,
-  not a fabricated clean result, but `PATH-NOT-SCANNED` reads as "out of scope"
-  and a reader scans past it. So a referent excluded by a directory that is *not*
-  one of todokeeper's own defaults is now listed by name in both `dead.mjs` and
-  `stale.mjs`, under the heading that says the audited repo's config put it
-  there. **This does not detect the suppression** — it cannot know intent, and it
-  fires identically on a repo that legitimately ignores its own `fixtures/`. It
-  only refuses to let the two cases print the same way.
+- **`ignore` and `.gitignore` are both attacker-controlled, and a
+  `PATH-NOT-SCANNED` verdict now says which side put it there.** Both files ship
+  inside the repo being audited, so one commit can delete a file an entry names
+  *and* exclude that file's directory; the referent then reports
+  `PATH-NOT-SCANNED` instead of `PATH-MISSING` — verified, not theorised. That
+  is an honestly-labelled bucket, not a fabricated clean result, but
+  `PATH-NOT-SCANNED` reads as "out of scope" and a reader scans past it. So a
+  referent excluded by anything that is *not* one of todokeeper's own defaults is
+  listed by name in both `dead.mjs` and `stale.mjs`, under a heading that says
+  the audited repo excluded it, and tagged `(.todokeeper.json)` or `(.gitignore)`
+  so the reader opens the right file. **This does not detect the suppression** —
+  it cannot know intent, and it fires identically on a repo that legitimately
+  ignores its own `fixtures/`. It only refuses to let the cases print the same
+  way. Honouring `.gitignore` widens this surface on purpose: reading a repo's
+  secrets was the worse of the two failures, and the disclosure is what keeps
+  the trade visible.
 - **That cap counts code units, not cost, so the real ceiling is a range.** A
   full 100 × 64 list against the same 5,000 headings costs 14ms in ASCII, 20ms
   in German, ~71ms in Greek or Cyrillic, 143ms in astral characters, and

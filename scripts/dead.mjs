@@ -339,6 +339,9 @@ for (const ref of seen.values()) {
 if (asJson) {
   await writeStdout(`${jsonSafe({
     root,
+    // `'git'` or `'walk'`. On `'walk'` nothing consulted `.gitignore`, so an
+    // ABSENT or PATH-EXISTS verdict was reached over a different file set.
+    enumeration: index.mode,
     referents: report,
     unreadTargets,
     droppedReferents,
@@ -356,7 +359,16 @@ const grouped = Object.fromEntries(order.map((k) => [k, []]));
 for (const r of report) grouped[r.verdict].push(r);
 
 console.log(`todokeeper dead — ${root}`);
-console.log(`${report.length} distinct referents, scanned across ${contents.size} files\n`);
+console.log(`${report.length} distinct referents, scanned across ${contents.size} files`);
+// Said every run, because it is the difference between honouring `.gitignore`
+// and not, and the reader cannot tell from the verdicts which one happened.
+if (index.mode === 'git') {
+  console.log('Enumeration: git — .gitignore, .git/info/exclude and your global excludes all applied.\n');
+} else {
+  console.log('Enumeration: directory walk — this root is not a git work tree, so .gitignore was');
+  console.log('NOT consulted and ignored files WERE read. `ignore` in .todokeeper.json is the only');
+  console.log('exclusion in effect here.\n');
+}
 
 if (unreadTargets.length) {
   console.log(`UNREAD TARGET (${unreadTargets.length}): ${unreadTargets.map(safeField).join(', ')}`);
@@ -368,7 +380,7 @@ const explain = {
   'PATH-MISSING': 'the entry names a file or directory that does not exist',
   'COMMENT-ONLY': 'every occurrence is inside a comment — probable tombstone, the thing is gone and a comment explains why',
   'DOC-ONLY': 'occurs only in prose/markdown — described but not used',
-  'PATH-NOT-SCANNED': 'the path sits under an ignored directory — this tool never looked, which is not the same as absent',
+  'PATH-NOT-SCANNED': 'the path is excluded by `ignore` or by .gitignore — this tool never looked, which is not the same as absent',
   CODE: 'occurs in code outside any comment — alive',
   'PATH-EXISTS': 'the path is there',
 };
@@ -387,10 +399,14 @@ for (const key of order) {
     // second one pass for the first.
     const bySuppression = list.filter((r) => r.ignoredByConfig);
     if (bySuppression.length) {
-      console.log(`  ${bySuppression.length} of these were excluded by this repo's own .todokeeper.json,`);
-      console.log('  not by todokeeper\'s defaults. Check the entry before reading it as out of scope:');
+      console.log(`  ${bySuppression.length} of these were excluded by this repo's own .todokeeper.json`);
+      console.log('  or .gitignore, not by todokeeper\'s defaults. Check the entry before reading');
+      console.log('  it as out of scope:');
       for (const r of bySuppression) {
-        console.log(`    \`${safeField(r.raw)}\`  — under \`${safeField(r.ignoredBy)}\``);
+        // The source is named because the two send a reader to different files,
+        // and `.gitignore` is the one they would not think to open.
+        const where = r.ignoredBySource === 'gitignore' ? '.gitignore' : '.todokeeper.json';
+        console.log(`    \`${safeField(r.raw)}\`  — under \`${safeField(r.ignoredBy)}\` (${where})`);
       }
     }
     console.log('');

@@ -70,6 +70,28 @@ which key: 0% completed mass on a file that obviously holds finished work means
 the heading's word is missing from `completedHeadings`; a section that reads as
 0 entries means `entryStyles` does not name how this repo writes an entry.
 
+### What gets scanned, and what `ignore` can say
+
+In a git work tree the file set comes from git, so **`.gitignore` is honoured**
+— every file at every depth, plus `.git/info/exclude` and the global excludes
+file. That matters most where a repo's only protection for personal data,
+`.env` files or credentials is a `.gitignore` line: measured on one real client
+repo, the old directory walk read 149 files of interview recordings and
+transcripts on default config, and the git enumeration reads none. Outside a
+work tree it falls back to the walk and **announces the downgrade in the report**
+— read that line before treating a clean `dead` run as coverage.
+
+`ignore` is literal and takes two shapes: a bare name matches that segment at
+any depth (files as well as directories, which is how `.env` or `SESSION.md`
+stays out), and a name containing a `/` matches that repo-relative path and its
+subtree, anchored at the root. **Patterns belong in `.gitignore`**, not here — a
+glob in `ignore` is rejected at load with a message saying so, as are an
+absolute path, a backslash, `..`, and an empty or padded entry. Every one of
+those used to be accepted and match nothing, in silence.
+
+`ignore` REPLACES the defaults rather than merging with them, so restate the
+ones you still want.
+
 ## What the three reports mean
 
 ### measure — two numbers that diverge
@@ -108,8 +130,9 @@ naive check's hits was a tombstone.
 So hits are tiered. **COMMENT-ONLY is the finding to read by hand** — every
 occurrence sits inside a comment, which usually means the thing is gone and the
 comment says why. DOC-ONLY means described but not used. ABSENT means gone.
-PATH-NOT-SCANNED means the path sits under an ignored directory and this tool
-never looked, which is not the same as absent.
+PATH-NOT-SCANNED means `ignore` or `.gitignore` put the path out of reach and
+this tool never looked, which is not the same as absent. The report tags which
+of the two, because they send you to different files.
 
 ## Acting on it
 
@@ -172,6 +195,13 @@ file with a 30% archive is a healthy file. Do not split it.
 backticked referents. An entry that names nothing in backticks is invisible to
 both, and that is a large share of a typical file — the `no path referent` count
 is how much.
+
+**It cannot see personal data that was never gitignored.** Honouring
+`.gitignore` closes the case where a repo protected its secrets that way and
+nothing else; it does nothing for a directory of client records that was simply
+committed, and no property of such a file distinguishes it from source. If a
+tree must never be read, name it in `ignore` — do not rely on this having
+noticed.
 
 **A repo-wide rename or restructure blinds it.** `git log -S` finds when a phrase
 last changed; moving a file rewrites every entry's history at once, so for some
@@ -287,13 +317,16 @@ not a finding. And the cap cannot tell a hostile file from a genuinely large
 one; a real 6,000-entry file is cut exactly like an attack.
 
 **`PATH-NOT-SCANNED` / `not-scanned` covers two opposite facts, and the reports
-now separate them.** `.todokeeper.json` ships inside the audited repo, so the
-same commit that deletes a file an entry names can add that file's directory to
-`ignore` — turning `PATH-MISSING` into `PATH-NOT-SCANNED`, which reads as "out
-of scope". Referents excluded by a directory that is not one of todokeeper's own
-defaults are now listed by name. This does **not** detect suppression and cannot
-know intent: it fires the same way on a repo that legitimately ignores its own
-`fixtures/`. It only stops the two cases printing identically.
+now separate them.** `.todokeeper.json` and `.gitignore` both ship inside the
+audited repo, so the same commit that deletes a file an entry names can also
+exclude that file's directory — turning `PATH-MISSING` into `PATH-NOT-SCANNED`,
+which reads as "out of scope". Referents excluded by anything that is not one of
+todokeeper's own defaults are listed by name, tagged with which of the two files
+did it. This does **not** detect suppression and cannot know intent: it fires the
+same way on a repo that legitimately ignores its own `fixtures/`. It only stops
+the cases printing identically. Reading `.gitignore` widens this surface
+deliberately — scanning a repo's secrets was the worse failure, and the tag is
+what keeps the trade visible.
 
 **Control characters are stripped from the human-readable reports, so what you
 read is not byte-identical to the repo.** Headings, entry leads, source lines
