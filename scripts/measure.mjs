@@ -21,7 +21,7 @@
 
 import {
   loadConfigOrExit, repoRoot, resolveTargets, sections, entries, rel, isCompletedHeading,
-  readTarget, safeField, jsonSafe, writeStdout,
+  readTargetMeta, warnIfHeadingless, safeField, jsonSafe, writeStdout,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -47,11 +47,29 @@ const files = [];
 // nothing beside it saying so.
 const skipped = [];
 
+// TWO SIZES, and which one answers which question is a decision, not an
+// accident. `readTargetMeta` collapses CRLF to LF, so the text measured here is
+// one byte per line smaller than the file on a CRLF checkout — 308.9KB read as
+// 304.6KB on one measured 4,427-line file.
+//
+//  - Every RATIO uses `bytes`, the normalised text, on both sides. Taking the
+//    denominator from the raw file while the section sizes come from normalised
+//    text mismatches them and understates completed mass by about one byte per
+//    line; on that same file 9.9% would print as 9.76%. Getting that figure
+//    right is the entire reason this script exists, so this is the combination
+//    to avoid.
+//  - The THRESHOLD verdict uses `diskBytes`, because "is this file big enough to
+//    split" is a question about the file on disk — the thing `ls` and the repo's
+//    own size budget are talking about. It is labelled "on disk" in the report
+//    for the same reason: an unexplained gap between `ls` and todokeeper is a
+//    bug report waiting to happen.
 for (const abs of targets) {
-  const text = readTarget(abs, rel(root, abs));
-  if (text === null) { skipped.push(rel(root, abs)); continue; }
+  const meta = readTargetMeta(abs, rel(root, abs));
+  if (meta === null) { skipped.push(rel(root, abs)); continue; }
+  const { text, diskBytes } = meta;
   const bytes = Buffer.byteLength(text, 'utf8');
   const secs = sections(text);
+  warnIfHeadingless(secs, text, rel(root, abs));
 
   let completedBytes = 0;
   let completedEntries = 0;
@@ -98,6 +116,7 @@ for (const abs of targets) {
   files.push({
     path: rel(root, abs),
     bytes,
+    diskBytes,
     lines: text.split('\n').length,
     completedBytes,
     completedPercent: bytes === 0 ? 0 : Number(((completedBytes / bytes) * 100).toFixed(1)),
@@ -109,14 +128,20 @@ for (const abs of targets) {
 }
 
 const totalBytes = files.reduce((n, f) => n + f.bytes, 0);
+const totalDiskBytes = files.reduce((n, f) => n + f.diskBytes, 0);
 const totalCompleted = files.reduce((n, f) => n + f.completedBytes, 0);
 const totalInline = files.reduce((n, f) => n + f.inlineDoneMarkers, 0);
-const over = files.filter((f) => f.bytes >= config.splitThresholdBytes);
+const over = files.filter((f) => f.diskBytes >= config.splitThresholdBytes);
 
 const verdict = {
   thresholdBytes: config.splitThresholdBytes,
   filesOverThreshold: over.map((f) => f.path),
+  // `totalBytes` is the normalised text and is the denominator of the
+  // percentage below; `totalDiskBytes` is what the threshold was compared
+  // against. They are equal on an LF checkout and differ by one byte per line
+  // on a CRLF one.
   totalBytes,
+  totalDiskBytes,
   completedBytes: totalCompleted,
   completedPercent: totalBytes === 0 ? 0 : Number(((totalCompleted / totalBytes) * 100).toFixed(1)),
   inlineDoneMarkers: totalInline,
@@ -148,7 +173,10 @@ if (skipped.length) {
 
 for (const f of files) {
   console.log(`${safeField(f.path)}`);
-  console.log(`  size            ${kb(f.bytes)} (${f.bytes.toLocaleString()} B, ${f.lines} lines)`);
+  console.log(`  size            ${kb(f.diskBytes)} (${f.diskBytes.toLocaleString()} B on disk, ${f.lines} lines)`);
+  if (f.diskBytes !== f.bytes) {
+    console.log(`                  ${f.bytes.toLocaleString()} B of text after CRLF normalisation — every percentage below uses that`);
+  }
   console.log(`  completed mass  ${kb(f.completedBytes)} (${f.completedBytes.toLocaleString()} B, ${f.completedPercent}% of file, ${f.completedEntries} entries)`);
   console.log(`  live entries    ${f.liveEntries}`);
   if (f.inlineDoneMarkers > 0) {
@@ -164,7 +192,7 @@ for (const f of files) {
 }
 
 if (files.length > 1) {
-  console.log(`total: ${kb(totalBytes)} across ${files.length} files, ${verdict.completedPercent}% completed mass\n`);
+  console.log(`total: ${kb(totalDiskBytes)} across ${files.length} files, ${verdict.completedPercent}% completed mass\n`);
 }
 
 if (verdict.crossed) {
