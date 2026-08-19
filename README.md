@@ -436,7 +436,7 @@ of deferred work, with completed sections written four different ways. The
 smallest were used to confirm it correctly does **nothing**.
 
 ```bash
-node test/smoke.mjs      # 71 checks, no dependencies, ~0.6s
+node test/smoke.mjs      # 132 checks, no dependencies, ~1.5s
 ```
 
 The suite builds a throwaway git repo, executes **every** branch of the
