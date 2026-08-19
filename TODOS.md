@@ -2,10 +2,13 @@
 
 Deferred work for todokeeper itself. It is also the plugin's own test fixture —
 run the three scripts against this repo and they should report something sane. Note
-that four of its nine PATH-MISSING referents are quotations rather than claims — the
-entries below quote a hypothetical page and three measured ancestor paths as
-evidence, and the tool has no way to tell a quoted example from a real one. That is
-the point of the hypothetical-referent entry below, not a defect in the file.
+that all seven of its PATH-MISSING referents name something outside this repo rather
+than something missing from it — a hypothetical page whose absence is the clause's
+whole point, plus manifests, a module specifier and paths quoted from other repos as
+evidence. The tool has no way to tell a quoted example from a claim, and that is the
+point of the hypothetical-referent entry below, not a defect in the file. Where a
+quoted path can move into a fenced block without costing the sentence, it has — the
+scoring table below is fenced for exactly that reason. (measured 2026-08-19)
 
 ## Referent classification
 
@@ -55,12 +58,17 @@ the point of the hypothetical-referent entry below, not a defect in the file.
   126 and 0 of 1,138: precision 1.0 at a recall of the single instance that
   suggested the rule, which is a sample wearing a spec's clothes. The structural
   cue is worse, because it is anti-diagnostic — scoring deepest existing
-  ancestor plus same-extension siblings, the hypothetical page scores
-  `src/pages` + 3, a genuinely renamed-away file scores `src/lib` + 85, and a
-  genuinely deleted one scores `src/lib/media` + 19. **A hypothetical path is
-  written to be plausible, so by construction it fits the tree exactly as well
-  as a file that really was deleted.** Shipped as a named non-goal in SKILL.md
-  and README.md instead of a heuristic.
+  ancestor plus same-extension siblings:
+
+  ```
+  hypothetical page      src/pages        + 3
+  renamed-away file      src/lib          + 85
+  deleted file           src/lib/media    + 19
+  ```
+
+  **A hypothetical path is written to be plausible, so by construction it fits
+  the tree exactly as well as a file that really was deleted.** Shipped as a
+  named non-goal in SKILL.md and README.md instead of a heuristic.
   (measured across 11 deferred-work files, 2026-08-18)
 
 - **A call that carries its own arguments is still searched for literally.**
@@ -216,7 +224,7 @@ the point of the hypothetical-referent entry below, not a defect in the file.
 
 - **`stale.mjs` still classifies every referent occurrence, with no memoisation.**
   `dead.mjs` now caches `classifyReferent` on the raw string; `stale.mjs` calls
-  `resolveReferent` per occurrence and only caches the git lookup that follows.
+  `classifyReferent` per occurrence and only caches the git lookup that follows.
   The cost is bounded by `MAX_REFERENTS` on the git children, which is the
   expensive half, so the remaining exposure is index lookups on repeated
   non-resolving strings — measured at 0.65s per 30,000 in `dead.mjs`'s harness,
