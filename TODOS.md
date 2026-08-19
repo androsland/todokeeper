@@ -110,6 +110,58 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   not correct. A real fix needs a per-language tokenizer.
   (known at design time, 2026-08-16)
 
+## Line endings
+
+- **`sections` and `entries` trust their caller for line endings, and nothing
+  enforces it.** (found fixing the CRLF defect, 2026-08-19) `normaliseNewlines`
+  runs inside `readTargetMeta`, which is the boundary every script reads targets
+  through, so the three CLIs are covered. `scripts/lib.mjs` is also an importable
+  module: anything that calls `sections` on bytes from its own `readFileSync`
+  gets the original defect back — zero headings, and a report that looks
+  measured. Stated in the `sections` docblock and nowhere else. A fix would be
+  normalising defensively inside both parsers, which costs a second pass over
+  every file and, worse, lets section byte counts disagree with the whole-file
+  count `measure.mjs` takes its percentages against. Left as a documented
+  contract deliberately; revisit if lib.mjs ever gains a consumer that is not
+  one of these three scripts.
+
+- **The 20-non-blank-line floor under the headingless warning is a judgement
+  with nothing behind it.** (found fixing the CRLF defect, 2026-08-19) Below it
+  `warnIfHeadingless` stays silent, because a short flat deferred-work file with
+  no headings is an ordinary way to keep one and warning about it is how a
+  warning gets ignored. Nothing calibrated the number against real repos, so a
+  19-line file that failed to parse gets the silent 0% the warning exists to
+  prevent. Both directions are tested; neither test says the boundary is in the
+  right place.
+
+- **Setext headings are named as a cause and still not parsed.** (found fixing
+  the CRLF defect, 2026-08-19) A file whose headings are underlined with `===`
+  or `---` yields none, so completed mass reads 0% and the archive sweeps as
+  live work — the same failure CRLF produced, from a different cause, and now
+  the only remaining one that a well-formed markdown file can hit. The warning
+  names it and `README.md` carries it as a non-goal, which is honest but is not
+  support. Supporting it means a second heading pass with a lookahead, and the
+  cost is that `---` is also a thematic break and a front-matter fence.
+
+- **The scanned corpus is never normalised, and only `indexOf` keeps that
+  safe.** (found fixing the CRLF defect, 2026-08-19) `dead.mjs` reads repo files
+  with a bare `readFileSync` — deliberately, since normalising every file in a
+  large tree buys nothing when the needle is located with `line.indexOf` and
+  displayed through `trim`. Verified rather than assumed at the time: the one
+  regex in `scanFile` treats a trailing CR as the whitespace it is. That safety
+  is a property of today's implementation, not of the read, so the next
+  line-oriented pattern added there inherits the CRLF bug with no boundary to
+  catch it.
+
+- **The split threshold now compares a size no percentage uses.** (found fixing
+  the CRLF defect, 2026-08-19) `measure.mjs` deliberately keeps two figures: the
+  on-disk size, which answers "is this file big enough to split", and the
+  normalised text length, which is the denominator of every ratio. On a CRLF
+  repo they differ by one byte per line — about 1.4% on a 4,400-line file — so a
+  file can cross the threshold on bytes that normalisation removes and that no
+  reported percentage is taken over. Both are printed and labelled, which is the
+  whole mitigation; nobody has argued the alternative assignment.
+
 ## Coverage
 
 - **`entryStyles` names three shapes and a repo outside them cannot be

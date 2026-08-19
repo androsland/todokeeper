@@ -70,6 +70,16 @@ which key: 0% completed mass on a file that obviously holds finished work means
 the heading's word is missing from `completedHeadings`; a section that reads as
 0 entries means `entryStyles` does not name how this repo writes an entry.
 
+**Check stderr before either, though — 0% is also what a file nobody could parse
+reports.** Completed sections are found by heading, so a file that yields none
+prints 0.0% completed mass and counts its whole archive as live, and that number
+looks exactly like a `completedHeadings` miss. It is not: adding a word that is
+already in the list changes nothing. `measure.mjs`, `dead.mjs` and `stale.mjs`
+all print `0 headings matched in <file>` to stderr when that happens, and it
+names the causes — setext headings, which this tool does not parse, or bare-CR
+line endings, which it does not normalise. CRLF is not among them: it is
+collapsed to LF on read, and used not to be.
+
 ### What gets scanned, and what `ignore` can say
 
 In a git work tree the file set comes from git, so **`.gitignore` is honoured**

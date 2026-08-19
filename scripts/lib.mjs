@@ -329,16 +329,58 @@ export const MAX_ENTRIES = 5_000;
 export const MAX_FROM = 64;
 
 /**
+ * Collapse CRLF to LF. The one place newline shape is decided.
+ *
+ * `text.split('\n')` on a CRLF file leaves a trailing `\r` on every line, and
+ * a line-oriented regex then quietly stops matching: `.` excludes `\r`, and an
+ * unflagged `$` anchors at end-of-INPUT rather than end-of-line, so
+ * `/^(#{1,6})\s+(.*)$/` matches nothing at all against `## Completed\r`. The
+ * result was not a crash but a plausible report — zero headings, one
+ * `(preamble)` section, 0.0% completed mass, and `stale.mjs` and `dead.mjs`
+ * sweeping the whole archive as live work because nothing was ever classified
+ * completed. Measured on a 308.9KB deferred-work file in a `core.autocrlf=true`
+ * checkout: 1 section against 14, and 0.0% against 9.9%.
+ *
+ * Normalising HERE rather than at that regex is the point. The defect is a
+ * property of every line-oriented match in the tool, not of one pattern, so
+ * fixing the pattern leaves the next one to rediscover it. Downstream of this
+ * function there is no `\r` to reason about.
+ *
+ * Two shapes it deliberately does not touch:
+ *
+ *  - A LONE `\r` inside heading or entry text on an otherwise-LF file. The
+ *    pattern is `/\r\n/g` and never `/\r/g`, because this tool measures the
+ *    file rather than edits it, and a blanket strip would silently alter the
+ *    content whose bytes it then reports.
+ *  - Classic-Mac BARE-CR line endings, where `\r` is the terminator and no
+ *    `\n` appears at all. Such a file is one line to every splitter here and
+ *    this replace does nothing for it. Not detected, by choice — `warnIfHeadingless`
+ *    will at least say the file parsed to no headings. Stated as a non-goal in
+ *    `README.md` rather than left to be inferred.
+ */
+export function normaliseNewlines(text) {
+  return text.replace(/\r\n/g, '\n');
+}
+
+/**
  * Read a whole file this tool does not control, refusing one large enough to
- * end the process instead of the read.
+ * end the process instead of the read, and hand back the on-disk size along
+ * with the text.
  *
  * Skip-and-announce rather than throw, matching `dead.mjs`'s repo-walk: one
  * oversized file in a `todos/` directory must not take the other four with it.
  * The caller drops a null. Silence here would be the worst outcome — a skipped
  * target reported as a measured one is a completed-mass number that is simply
  * wrong.
+ *
+ * The size is returned rather than re-statted by the caller because this
+ * function is the one place a repo-supplied path is proven to be a contained
+ * regular file. A second `statSync` somewhere else is a second path that has
+ * to remember both checks, and this repo has already missed that twice.
+ *
+ * THIS IS THE LINE-ENDING BOUNDARY. See `normaliseNewlines`.
  */
-export function readTarget(path, label = path) {
+export function readTargetMeta(path, label = path) {
   let st;
   try {
     st = statSync(path);
@@ -369,11 +411,19 @@ export function readTarget(path, label = path) {
     return null;
   }
   try {
-    return readFileSync(path, 'utf8');
+    return { text: normaliseNewlines(readFileSync(path, 'utf8')), diskBytes: size };
   } catch (err) {
     process.stderr.write(`todokeeper: cannot read \`${safeField(label)}\` — ${safeField(err.message)}\n`);
     return null;
   }
+}
+
+/**
+ * The text of a target, or null. Every caller that does not need the size.
+ */
+export function readTarget(path, label = path) {
+  const meta = readTargetMeta(path, label);
+  return meta === null ? null : meta.text;
 }
 
 /**
@@ -765,6 +815,14 @@ export function resolveTargets(root, config) {
  * Split a markdown file into sections at ATX headings, carrying each section's
  * byte length and heading depth. Fenced code blocks are skipped so a `#` inside
  * a shell snippet never opens a phantom section.
+ *
+ * Assumes LF-normalised input, which is what `readTargetMeta` returns. The
+ * heading pattern below is `$`-anchored without the `m` flag and so matches
+ * nothing on a line carrying a trailing `\r`; it is deliberately NOT hardened
+ * here, because normalising once at the read boundary closes that for every
+ * line-oriented match in the tool rather than for this one. A caller that
+ * imports `sections` and hands it bytes from its own `readFileSync` is outside
+ * that contract — run them through `normaliseNewlines` first.
  */
 export function sections(text) {
   const lines = text.split('\n');
@@ -796,6 +854,43 @@ export function sections(text) {
   return out
     .filter((s) => s.heading !== null || s.lines.some((l) => l.trim()))
     .map((s) => ({ ...s, body: s.lines.join('\n'), bytes: Buffer.byteLength(s.lines.join('\n'), 'utf8') }));
+}
+
+const HEADINGLESS_MIN_LINES = 20;
+
+/**
+ * Say so when a target parsed to no headings at all, because the number that
+ * produces is plausible rather than obviously wrong.
+ *
+ * Completed sections are found BY heading. With none, completed mass reads
+ * 0.0%, every archived entry counts as live, and nothing on stdout suggests a
+ * parse problem — the failure this tool exists to prevent, aimed at itself.
+ * The CRLF cause is closed upstream by `normaliseNewlines`; what remains is
+ * setext headings, bare-CR line endings and files that genuinely have none, so
+ * the message names those and does not repeat the one that is fixed.
+ *
+ * The 20-non-blank-line floor is a judgement, not a measurement: a short flat
+ * deferred-work file with no headings is an ordinary way to keep one, and
+ * warning about it would be noise on a legitimate configuration. Above that it
+ * is worth a line of stderr. Nothing calibrated this number.
+ */
+export function warnIfHeadingless(secs, text, label) {
+  if (secs.length !== 1 || secs[0].heading !== null) return false;
+  // Split on any terminator, not just LF. A bare-CR file is ONE line to every
+  // splitter downstream, so counting with `split('\\n')` would score it at 1 and
+  // put the exact case this message exists to name below the floor. This split
+  // counts; it does not normalise.
+  const nonBlank = text.split(/\r\n|\r|\n/).filter((l) => l.trim()).length;
+  if (nonBlank < HEADINGLESS_MIN_LINES) return false;
+  process.stderr.write(
+    `todokeeper: 0 headings matched in \`${safeField(label)}\` — ${nonBlank} non-blank lines and `
+    + 'not one ATX (`#`) heading. CRLF is normalised on read, so it is not that. What is left: '
+    + 'setext headings (underlined with `===` or `---`), which this tool does not parse; '
+    + 'classic-Mac bare-CR line endings, which nothing here normalises; or a file that really '
+    + 'has no headings. Completed sections are found by heading, so completed mass reads 0% and '
+    + 'every entry counts as live.\n',
+  );
+  return true;
 }
 
 /**

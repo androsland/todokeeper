@@ -59,7 +59,7 @@
  *    distinguishes it from source.
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -345,6 +345,154 @@ function testCallFormVerdicts(root) {
   check('a call form with only a tombstone stays COMMENT-ONLY',
     gone && gone.verdict === 'COMMENT-ONLY',
     `got ${gone ? gone.verdict : 'no such referent'}`);
+}
+
+// -------------------------------------- 5b. CRLF line endings parse the same
+
+/**
+ * A CRLF worktree used to parse to ZERO headings, and the report it produced
+ * was plausible rather than obviously broken.
+ *
+ * `text.split('\n')` leaves a trailing `\r` on every line; `.` excludes `\r`
+ * and an unflagged `$` anchors at end-of-input, so the ATX heading pattern
+ * matched nothing. One `(preamble)` section, 0.0% completed mass, and both
+ * `stale.mjs` and `dead.mjs` sweeping the archive as live work because nothing
+ * was ever classified completed. Measured on a real 308.9KB file: 1 section
+ * against 14, 0.0% against 9.9%.
+ *
+ * This fixture writes `\r\n` into the string literals explicitly and commits
+ * with `core.autocrlf=false`, so what is on disk is decided by this file and
+ * not by the checkout the suite happens to run in. A line-ending test whose
+ * fixture is normalised by git proves whatever git was configured to do.
+ *
+ * Asserted against the broken tree, not assumed: reverting `normaliseNewlines`
+ * to `return text` fails 6 of these 7 checks. The seventh is the fixture's own
+ * CRLF-on-disk sanity check, which must pass on both trees or it is not
+ * checking the fixture.
+ */
+function testCrlfParsesIdentically() {
+  const root = mkdtempSync(join(tmpdir(), 'todokeeper-crlf-'));
+  try {
+    const put = (p, body) => {
+      mkdirSync(join(root, dirname(p)), { recursive: true });
+      writeFileSync(join(root, p), body);
+    };
+    // Every line ends CRLF, including the blank ones.
+    const crlf = (lines) => `${lines.join('\r\n')}\r\n`;
+
+    put('src/app.ts', 'export const app = 1;\n');
+    put('TODOS.md', crlf([
+      '# TODOS',
+      '',
+      '## Open',
+      '',
+      '- **A live entry** — `src/app.ts` needs a second look.',
+      '',
+      '## Completed',
+      '',
+      '- **A finished entry** — `src/app.ts` landed.',
+      '',
+    ]));
+
+    const git = (...args) => execFileSync('git', args, { cwd: root, stdio: 'pipe' });
+    git('init', '-q');
+    git('config', 'core.autocrlf', 'false');
+    git('config', 'user.email', 'smoke@example.invalid');
+    git('config', 'user.name', 'smoke');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'crlf fixture');
+
+    // The fixture is only a fixture if the bytes survived to disk.
+    const onDisk = readFileSync(join(root, 'TODOS.md')).toString('latin1');
+    const lf = (onDisk.match(/\n/g) || []).length;
+    const crlfCount = (onDisk.match(/\r\n/g) || []).length;
+    check('the CRLF fixture really holds CRLF on disk',
+      crlfCount > 0 && crlfCount === lf,
+      `${crlfCount} CRLF against ${lf} LF — git or the platform normalised the fixture, so this phase proves nothing`);
+
+    const m = JSON.parse(execFileSync('node', [join(SCRIPTS, 'measure.mjs'), '--root', root, '--json'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+    const file = m.files[0];
+
+    check('a CRLF file parses into its headings',
+      file && file.sections.length === 3,
+      `got ${file ? file.sections.length : 'no file'} section(s): ${file ? file.sections.map((x) => x.heading).join(' | ') : ''}`);
+    check('a CRLF file reports non-zero completed mass',
+      file && file.completedBytes > 0 && file.completedPercent > 0,
+      `got ${file ? `${file.completedBytes} B / ${file.completedPercent}%` : 'no file'}`);
+    check('a CRLF file counts the completed entry as completed, not live',
+      file && file.completedEntries === 1 && file.liveEntries === 1,
+      `got ${file ? `${file.completedEntries} completed, ${file.liveEntries} live` : 'no file'}`);
+    // The ratio is taken over normalised text; the threshold verdict is not.
+    check('the on-disk size is reported alongside the normalised one',
+      file && file.diskBytes > file.bytes,
+      `got diskBytes ${file ? file.diskBytes : '?'} vs bytes ${file ? file.bytes : '?'}`);
+
+    // Both scripts count entries themselves rather than reusing measure.mjs's
+    // pass, so both are asserted. The signal is the COUNT, not the absence of a
+    // string: `stale.mjs` prints only entries it judges stale, and a fixture
+    // committed seconds ago has none — so "the completed entry is not in the
+    // report" passes just as well on the broken tree and proves nothing.
+    const stale = execFileSync('node', [join(SCRIPTS, 'stale.mjs'), '--root', root],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    check('stale.mjs counts one live entry, not the archive too, on a CRLF file',
+      /\b1 live entr\w+ across\b/.test(stale),
+      `expected 1 live entry; got: ${(stale.split('\n')[1] || '').trim()}`);
+
+    const dead = execFileSync('node', [join(SCRIPTS, 'dead.mjs'), '--root', root, '--json'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const leads = JSON.parse(dead).referents.flatMap((r) => r.from || []).map((f) => f.lead);
+    check('dead.mjs draws provenance from the live entry only on a CRLF file',
+      leads.length === 1 && leads[0] === 'A live entry',
+      `provenance was ${JSON.stringify(leads)}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --------------------------- 5c. a file that parsed to no headings says so
+
+/**
+ * The diagnostic that keeps the remaining causes from being silent.
+ *
+ * CRLF is fixed above, but setext headings and classic-Mac bare-CR endings
+ * still produce zero headings, and the report they produce is the same
+ * plausible one: 0.0% completed mass with nothing on stdout saying why. Both
+ * directions are checked, because a warning that fires on a legitimate
+ * configuration is how a warning gets ignored — a short flat deferred-work
+ * file with no headings is an ordinary way to keep one.
+ */
+function testHeadinglessWarning() {
+  const bullets = (n) => Array.from({ length: n }, (_, i) => `- **Entry ${i + 1}** — thing ${i + 1} needs work.`);
+  const stderrOf = (body, newline) => {
+    const root = mkdtempSync(join(tmpdir(), 'todokeeper-flat-'));
+    try {
+      writeFileSync(join(root, 'TODOS.md'), body.join(newline) + newline);
+      const r = spawnSync('node', [join(SCRIPTS, 'measure.mjs'), '--root', root],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      return r.stderr;
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+
+  check('a long headingless file announces that it parsed to no headings',
+    stderrOf(bullets(25), '\n').includes('0 headings matched'),
+    'the 0% it reports would have been silent');
+
+  // The case CRLF normalisation structurally cannot reach. It must still be
+  // named, and the line count has to be taken across bare CR to see it at all:
+  // to every splitter downstream this file is one line.
+  const bare = stderrOf(bullets(25), '\r');
+  check('a bare-CR file is seen as many lines, not one, by the warning',
+    /\b25 non-blank lines\b/.test(bare),
+    `got: ${bare.slice(0, 200)}`);
+  check('...and the message names bare-CR as the cause nothing normalises',
+    bare.includes('bare-CR'));
+
+  check('a short flat file is left alone',
+    stderrOf(bullets(3), '\n').trim() === '',
+    'warning on a legitimate configuration is how warnings get ignored');
 }
 
 // ------------------------------------- 6. no literal control byte in source
@@ -835,6 +983,8 @@ try {
     ['scripts', testScripts],
     ['reports', testReportsSurfaceSuppression],
     ['call-form', testCallFormVerdicts],
+    ['crlf', testCrlfParsesIdentically],
+    ['headingless', testHeadinglessWarning],
     ['control-bytes', testNoControlBytes],
     ['counts', testCounts],
     ['piped-json', testPipedJson],

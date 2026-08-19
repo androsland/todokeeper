@@ -233,6 +233,21 @@ An unstated limit reads as a claim of coverage, so:
   entries in a bucket a human reads.
 - **Comment detection does not parse string literals**, so a needle in a quoted
   string after a `//` reads as commented.
+- **CRLF is normalised on read; classic-Mac bare CR is not.** `\r\n` becomes
+  `\n` before anything parses, so a Windows `core.autocrlf=true` checkout and a
+  repo pinning `*.md text eol=crlf` in `.gitattributes` both parse identically to
+  an LF one. A file whose lines end in a bare `\r` and no `\n` is one line to
+  every splitter here, and nothing detects that — it will report one section and
+  0% completed mass. What it will not do is stay quiet about it: any target that
+  parses to no headings prints `0 headings matched` to stderr and names bare CR
+  as a cause. A lone `\r` inside heading or entry text on an otherwise-LF file is
+  left exactly as written, because this tool measures the file rather than edits
+  it.
+- **`measure.mjs` reports two sizes on a CRLF file, and they are different
+  questions.** The size shown is the file **on disk**, which is what the split
+  threshold is compared against and what `ls` agrees with. Every percentage is
+  taken over the normalised text, which is one byte per line smaller. On an LF
+  checkout the two are equal and only one is printed.
 
 Every residual error is one-directional: a false alarm a human dismisses, never a
 dead referent reported as alive.

@@ -28,7 +28,7 @@ import { readFileSync, statSync } from 'node:fs';
 import {
   loadConfigOrExit, repoRoot, resolveTargets, sections, entries,
   classifyReferent, buildFileIndex, walkFiles, isText, rel, isCompletedHeading,
-  readTarget, safeField, jsonSafe, writeStdout, MAX_REFERENTS, MAX_ENTRIES, MAX_FROM,
+  readTarget, warnIfHeadingless, safeField, jsonSafe, writeStdout, MAX_REFERENTS, MAX_ENTRIES, MAX_FROM,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -196,9 +196,14 @@ for (const abs of targets) {
   // because a referent nobody collected cannot be ABSENT — it was never asked.
   const text = readTarget(abs, file);
   if (text === null) { unreadTargets.push(file); continue; }
+  const secs = sections(text);
+  // A target that parsed to no headings produces a plausible report rather than
+  // an obviously broken one: nothing is ever classified completed, so the whole
+  // archive sweeps as live work. Say so on stderr before printing the numbers.
+  warnIfHeadingless(secs, text, file);
   let completedDepth = null;
 
-  for (const sec of sections(text)) {
+  for (const sec of secs) {
     const completedHere = sec.heading != null && isCompletedHeading(sec.heading, config.completedHeadings);
     if (sec.heading != null && completedDepth != null && sec.depth <= completedDepth && !completedHere) {
       completedDepth = null;
