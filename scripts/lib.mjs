@@ -7,7 +7,7 @@
  * that guessed at it would be wrong silently.
  */
 
-import { readFileSync, existsSync, statSync, readdirSync, realpathSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, lstatSync, readdirSync, realpathSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
@@ -622,6 +622,17 @@ export function loadConfig(root) {
   if (!Array.isArray(config.ignore) || config.ignore.some((t) => typeof t !== 'string')) {
     throw new Error('.todokeeper.json: `ignore` must be an array of strings');
   }
+  // Every shape rejected here previously matched nothing, at any depth, in
+  // silence — and a line in `ignore` that matches nothing reads exactly like
+  // protection. That is the same failure the unknown-key check above exists to
+  // stop, one level down: the config said something, the tool did nothing, and
+  // the only signal was the absence of a signal.
+  for (const entry of config.ignore) {
+    const problem = ignoreEntryProblem(entry);
+    if (problem) {
+      throw new Error(`.todokeeper.json: \`ignore\` entry ${JSON.stringify(safeField(entry))} ${problem}`);
+    }
+  }
   checkWordList('completedHeadings', config.completedHeadings);
   checkWordList('inlineDoneMarkers', config.inlineDoneMarkers);
   // Unvalidated, this reached a numeric comparison and simply made `crossed`
@@ -646,6 +657,41 @@ export function loadConfig(root) {
     }
   }
   return config;
+}
+
+/**
+ * Why an `ignore` entry cannot match anything, or null if it can.
+ *
+ * The glob case is the one worth spelling out, because rejecting it is a choice
+ * and the obvious alternative is to implement it. `ignore` stays literal:
+ * patterns belong in `.gitignore`, which `listFiles` now honours through git
+ * itself, so a repo wanting `*.log` excluded already has the place to say it
+ * and gets a correct implementation of the syntax rather than a second, worse
+ * one here. What this cannot see is a well-formed entry naming a path that does
+ * not exist — `web/test-resluts` passes every check below and excludes nothing.
+ */
+function ignoreEntryProblem(entry) {
+  if (entry.trim() === '') {
+    return 'is empty. An empty string matches nothing and reads like a rule.';
+  }
+  if (entry.trim() !== entry) {
+    return 'has leading or trailing whitespace, which no real path segment carries.';
+  }
+  if (/[*?[\]]/.test(entry)) {
+    return 'looks like a glob. `ignore` is a list of literal names and repo-relative '
+      + 'paths on purpose — put patterns in `.gitignore`, which todokeeper reads when '
+      + 'the root is a git work tree. Use `node_modules` or `web/test-results`.';
+  }
+  if (entry.includes('\\')) {
+    return 'uses a backslash. Paths here are `/`-separated on every platform.';
+  }
+  if (entry.startsWith('/') || /^[A-Za-z]:\//.test(entry)) {
+    return 'is an absolute path. `ignore` entries are relative to the repository root.';
+  }
+  if (entry.split('/').includes('..')) {
+    return 'contains `..`. `ignore` entries may not climb out of the repository root.';
+  }
+  return null;
 }
 
 /**
@@ -839,7 +885,8 @@ export function buildFileIndex(root, ignore) {
   const byPath = new Set();
   const byBase = new Map();
   const dirs = new Set();
-  for (const abs of walkFiles(root, ignore)) {
+  const listing = listFiles(root, ignore);
+  for (const abs of listing.files) {
     const path = rel(root, abs);
     byPath.add(path);
     const base = path.slice(path.lastIndexOf('/') + 1);
@@ -851,7 +898,21 @@ export function buildFileIndex(root, ignore) {
       dirs.add(d);
     }
   }
-  return { byPath, byBase, dirs, ignore: new Set(ignore), deps: declaredDependencies(root) };
+  return {
+    byPath,
+    byBase,
+    dirs,
+    // `ignore` is kept as the raw set it always was: it is part of this
+    // record's published shape and nothing here needs to break to add the two
+    // fields below it.
+    ignore: new Set(ignore),
+    matcher: listing.matcher,
+    // `'git'` or `'walk'`. A report that does not say which one ran is claiming
+    // a coverage it may not have — see `listFiles`.
+    mode: listing.mode,
+    gitIgnored: listing.gitIgnored,
+    deps: declaredDependencies(root),
+  };
 }
 
 /**
@@ -1009,12 +1070,13 @@ export function classifyReferent(raw, index = null) {
       dir,
       resolved: index && index.dirs.has(dir) ? dir : null,
       ignored: globIgnoredBy !== null,
-      ignoredBy: globIgnoredBy,
+      ignoredBy: globIgnoredBy ? globIgnoredBy.by : null,
       // Same provenance split as the path branch below: a glob under a
       // directory the SCANNED REPO chose to ignore is the audited party
       // deciding what the audit may see, and it lands in the same quiet
       // bucket as a directory todokeeper skips by default.
-      ignoredByConfig: globIgnoredBy !== null && !DEFAULTS.ignore.includes(globIgnoredBy),
+      ignoredByConfig: globIgnoredBy !== null && globIgnoredBy.source !== 'defaults',
+      ignoredBySource: globIgnoredBy ? globIgnoredBy.source : null,
       raw,
     };
   }
@@ -1054,16 +1116,21 @@ export function classifyReferent(raw, index = null) {
   if (stripped.includes('/') || looksLikeFile) {
     // A path the index cannot see because it was never scanned is not missing —
     // build output and vendored trees are excluded by config, not by absence.
-    const ignoredBy = ignoringSegment(stripped, index);
+    const suppressor = ignoringSegment(stripped, index);
     return {
       kind: 'path',
       needle: stripped,
       resolved: null,
-      ignored: ignoredBy !== null,
-      ignoredBy,
+      ignored: suppressor !== null,
+      ignoredBy: suppressor ? suppressor.by : null,
       // Whether the exclusion came from this tool's own defaults or from the
-      // scanned repo's `.todokeeper.json`. See `PATH-NOT-SCANNED` in dead.mjs.
-      ignoredByConfig: ignoredBy !== null && !DEFAULTS.ignore.includes(ignoredBy),
+      // scanned repo's own `.todokeeper.json` / `.gitignore`. See
+      // `PATH-NOT-SCANNED` in dead.mjs.
+      ignoredByConfig: suppressor !== null && suppressor.source !== 'defaults',
+      // `'defaults' | 'config' | 'gitignore'`, so a report can name the file to
+      // open. Folding `.gitignore` into `ignoredByConfig` alone would send a
+      // reader to `.todokeeper.json` to find a line that is not in it.
+      ignoredBySource: suppressor ? suppressor.source : null,
       raw,
     };
   }
@@ -1084,21 +1151,28 @@ export function classifyReferent(raw, index = null) {
  * a fabricated clean result but it is a real finding wearing a neutral label.
  */
 function ignoringSegment(path, index) {
-  if (!index || !index.ignore) return null;
-  // EVERY segment, because that is what the walk does: `walkFiles` compares
-  // `skip` against each entry's basename at every depth, so `internal` in
-  // `ignore` removes `src/internal/auth.ts` from the index just as surely as
-  // `internal/auth.ts`. This asked about segment 0 only, and the two answers
-  // disagreed for anything nested — the file was never indexed, nothing
-  // reported it as excluded, and it fell out the bottom as PATH-MISSING.
-  // That is worse than the bucket this function exists to expose: instead of
-  // a quiet count, the tool made the affirmative claim that a file which
-  // exists on disk is gone, which invites deleting a live entry as obsolete.
-  // Measured on a fixture where `src/internal/auth.ts` exists and `internal`
-  // is in the repo's own `ignore`.
-  for (const seg of path.replace(/^\.\//, '').split('/')) {
-    if (index.ignore.has(seg)) return seg;
+  if (!index) return null;
+  const p = String(path).replace(/^\.\//, '');
+  // EVERY segment, because that is what the enumeration does: one compiled
+  // matcher serves both, so `internal` in `ignore` removes
+  // `src/internal/auth.ts` from the index just as surely as `internal/auth.ts`.
+  // This asked about segment 0 only, and the two answers disagreed for anything
+  // nested — the file was never indexed, nothing reported it as excluded, and
+  // it fell out the bottom as PATH-MISSING. That is worse than the bucket this
+  // function exists to expose: instead of a quiet count, the tool made the
+  // affirmative claim that a file which exists on disk is gone, which invites
+  // deleting a live entry as obsolete. Measured on a fixture where
+  // `src/internal/auth.ts` exists and `internal` is in the repo's own `ignore`.
+  const byList = ignoredBy(p, index.matcher);
+  if (byList !== null) {
+    return { by: byList, source: DEFAULTS.ignore.includes(byList) ? 'defaults' : 'config' };
   }
+  // Checked SECOND so the common case keeps its old answer. `node_modules` is
+  // both a todokeeper default and gitignored in most repos; reporting it as a
+  // `.gitignore` suppression would move every such referent into the loud
+  // bucket and drown the one case that bucket exists for.
+  const byGit = gitIgnoringPrefix(p, index.gitIgnored);
+  if (byGit !== null) return { by: byGit, source: 'gitignore' };
   return null;
 }
 
@@ -1155,12 +1229,164 @@ export function lastCommitChangingPhrase(root, phrase, pathspecs) {
 
 /* ------------------------------------------------------------------- walk */
 
-export function walkFiles(root, ignore) {
-  const skip = new Set(ignore);
+/**
+ * `ignore` compiled once into the two shapes it actually has. Entries are
+ * LITERAL — a bare name matches that segment at any depth, a name containing a
+ * `/` matches that repo-relative path and everything under it.
+ *
+ * The path form exists because its absence was a silent no-op, which is the
+ * worst failure this config can have: a repo wrote `web/test-results`, the old
+ * `skip.has(item.name)` compared it against basenames only, it matched nothing
+ * at any depth, and the line sat in `.todokeeper.json` reading exactly like
+ * protection. Nothing reported it. `loadConfig` now rejects the shapes that
+ * still cannot match — globs, absolute paths, backslashes, `..` — so the
+ * remaining failure mode is a typo'd path, which no validator can see.
+ *
+ * One compiled matcher serves BOTH the enumeration and `ignoringSegment`. That
+ * is deliberate and it is the second half of the same bug: when the walk and
+ * the classifier disagree about what is excluded, a file that was never indexed
+ * gets reported as PATH-MISSING — an affirmative claim that something on disk
+ * is gone, which invites deleting a live entry. They cannot disagree if there
+ * is only one predicate.
+ */
+export function compileIgnore(list) {
+  const names = new Set();
+  const paths = [];
+  for (const raw of list || []) {
+    const entry = String(raw).replace(/^\.\//, '').replace(/\/+$/, '');
+    if (!entry) continue;
+    if (entry.includes('/')) paths.push(entry);
+    else names.add(entry);
+  }
+  return { names, paths };
+}
+
+/**
+ * The entry excluding `path`, or null. `path` is repo-relative and
+ * `/`-separated. Names are checked before paths so the reported suppressor
+ * stays the same string a pre-path config would have reported.
+ */
+export function ignoredBy(path, matcher) {
+  if (!matcher) return null;
+  const p = String(path).replace(/^\.\//, '').replace(/\/+$/, '');
+  if (!p) return null;
+  for (const seg of p.split('/')) {
+    if (matcher.names.has(seg)) return seg;
+  }
+  for (const prefix of matcher.paths) {
+    if (p === prefix || p.startsWith(`${prefix}/`)) return prefix;
+  }
+  return null;
+}
+
+/**
+ * The ignored prefix covering `path` according to `.gitignore`, or null.
+ *
+ * `gitIgnored` holds what `git ls-files --others --ignored --directory`
+ * returned: whole directories collapsed to one entry, plus individually
+ * ignored files. So the lookup is an exact hit or an ancestor hit, and never a
+ * pattern match — git already did the pattern matching, which is the entire
+ * reason this tool does not implement gitignore semantics itself.
+ */
+function gitIgnoringPrefix(path, gitIgnored) {
+  if (!gitIgnored || gitIgnored.size === 0) return null;
+  let p = String(path).replace(/^\.\//, '').replace(/\/+$/, '');
+  if (!p) return null;
+  if (gitIgnored.has(p)) return p;
+  let cut = p.lastIndexOf('/');
+  while (cut > 0) {
+    p = p.slice(0, cut);
+    if (gitIgnored.has(p)) return p;
+    cut = p.lastIndexOf('/');
+  }
+  return null;
+}
+
+/**
+ * Bytes a `git ls-files` listing may occupy. `execFileSync` defaults to 1MB and
+ * throws `ENOBUFS` past it, which this code turns into "not a git repo" and a
+ * silent downgrade to the plain walk — so the number is set where a large
+ * monorepo cannot reach it rather than left to the default. 64MB is ~800,000
+ * paths at 80 bytes each.
+ */
+const GIT_LIST_BUFFER = 64 * 1024 * 1024;
+
+/**
+ * One git enumeration per root per process. These are one-shot CLIs, so a cache
+ * that never invalidates is correct here and wrong in a long-lived process —
+ * `dead.mjs` alone would otherwise shell out four times for the same answer
+ * (`walkFiles` directly, then `buildFileIndex`, each running two git commands).
+ */
+const gitListingCache = new Map();
+
+/**
+ * What git says is in this work tree, or null when the answer cannot be had.
+ *
+ * `-z` is not an optimisation: without it git QUOTES any path containing a
+ * non-ASCII byte, a quote or a backslash, so `"\303\250.md"` would enter the
+ * index as a literal 12-character name and every referent naming that file
+ * would read as PATH-MISSING. This repo is bilingual by intent; the quoting
+ * form would have fired on the first Greek filename.
+ *
+ * The toplevel comparison is what keeps the two enumerations equivalent. `git
+ * ls-files` run from a SUBDIRECTORY of a work tree lists that subdirectory's
+ * files with paths relative to it, which is not what `root` means to any caller
+ * here — so a root that is not itself the toplevel falls back to the walk
+ * rather than silently scanning a different set. `realpathSync` on both sides
+ * because a work tree reached through a symlink compares unequal as a string.
+ *
+ * Returns null on: no git binary, not a work tree, root below the toplevel, a
+ * listing past the buffer, or any git failure. Every one of those is a
+ * DOWNGRADE, not an error — the caller falls back to the plain walk and says so.
+ */
+function gitEnumerate(root) {
+  let top;
+  try {
+    top = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return null;
+  }
+  if (!top) return null;
+  try {
+    if (realpathSync(top) !== realpathSync(root)) return null;
+  } catch {
+    return null;
+  }
+  let listed;
+  let ignored;
+  try {
+    const run = (args) => execFileSync('git', args, {
+      cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: GIT_LIST_BUFFER,
+    });
+    // Tracked plus untracked-and-not-ignored: exactly the files a contributor
+    // would call "in the repo". `--exclude-standard` is what applies every
+    // `.gitignore` at every depth, `.git/info/exclude`, and the user's global
+    // excludes file — none of which this tool parses or wants to.
+    listed = run(['ls-files', '-z', '--cached', '--others', '--exclude-standard']);
+    // The complement, for `ignoringSegment`. `--directory` collapses a wholly
+    // ignored directory to one entry, so `interview/` costs one string rather
+    // than one per recording inside it.
+    ignored = run(['ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--directory']);
+  } catch {
+    return null;
+  }
+  const split = (out) => out.split('\0').filter(Boolean);
+  return {
+    files: split(listed),
+    ignored: new Set(split(ignored).map((p) => p.replace(/\/+$/, ''))),
+  };
+}
+
+/** The plain recursive walk. Used when `gitEnumerate` returns null. */
+function walkDisk(root, matcher) {
   const out = [];
-  const stack = [root];
+  // The repo-relative prefix travels with the directory so a path-shaped
+  // `ignore` entry can be matched during descent rather than after it.
+  const stack = [['', root]];
   while (stack.length) {
-    const dir = stack.pop();
+    const [prefix, dir] = stack.pop();
     let items;
     try {
       items = readdirSync(dir, { withFileTypes: true });
@@ -1168,13 +1394,78 @@ export function walkFiles(root, ignore) {
       continue;
     }
     for (const item of items) {
-      if (skip.has(item.name)) continue;
+      const path = prefix ? `${prefix}/${item.name}` : item.name;
+      // Before the isDirectory() branch on purpose: `ignore` suppresses FILES
+      // as well as directories, which is how a repo keeps `.env`, `.env.keys`
+      // or `SESSION.md` out of the scan without inventing a directory for them.
+      if (ignoredBy(path, matcher)) continue;
       const abs = join(dir, item.name);
-      if (item.isDirectory()) stack.push(abs);
+      // A Dirent reports the entry's OWN type, so a symlink is neither a
+      // directory nor a file and falls through both arms unfollowed. That is
+      // load-bearing rather than incidental: it is what keeps this mode
+      // agreeing with the lstat in listFiles. Never switch these to statSync.
+      if (item.isDirectory()) stack.push([path, abs]);
       else if (item.isFile()) out.push(abs);
     }
   }
   return out;
+}
+
+/**
+ * Every file this tool may look at, and how it found them.
+ *
+ * `mode` is `'git'` or `'walk'`, and the difference is not cosmetic — it is the
+ * difference between honouring `.gitignore` and not. In `'walk'` mode nothing
+ * excludes an ignored file except `ignore` in `.todokeeper.json`, so a repo
+ * whose secrets or personal data are protected by a `.gitignore` line alone
+ * gets them READ. Every caller that prints a report prints the mode.
+ *
+ * Why git rather than a gitignore parser: the semantics are not small
+ * (precedence between files at different depths, `!` negation, `**`, a trailing
+ * slash meaning directory-only, `.git/info/exclude`, `core.excludesFile`), and
+ * a parser that gets one of them wrong fails in the direction that reads the
+ * file it was supposed to skip. Shelling out to git is already how this tool
+ * answers three other questions.
+ *
+ * A tracked file that has been deleted from disk is still in the index and is
+ * still listed, so each path is stat'ed; that also drops submodule gitlinks,
+ * which `ls-files` reports as a single entry naming a directory.
+ */
+export function listFiles(root, ignore) {
+  const matcher = compileIgnore(ignore);
+  const key = resolve(root);
+  if (!gitListingCache.has(key)) gitListingCache.set(key, gitEnumerate(key));
+  const git = gitListingCache.get(key);
+  if (!git) {
+    return { mode: 'walk', files: walkDisk(key, matcher), gitIgnored: null, matcher };
+  }
+  const files = [];
+  for (const path of git.files) {
+    if (ignoredBy(path, matcher)) continue;
+    const abs = join(key, path);
+    try {
+      // lstat, never stat. Git stores a symlink as a blob holding its target
+      // string and lists it like any other path, so `ls-files` hands us links
+      // as readily as files. `statSync` FOLLOWS one, and `readFileSync`
+      // downstream follows it again. Two escapes, and the second is the one
+      // that matters here: a tracked link whose target sits INSIDE a
+      // gitignored directory is not itself ignored, so it passes every filter
+      // above and yields exactly the bytes this change exists to stop being
+      // read. A link's own content is its target string -- nothing worth
+      // scanning -- so drop it, and both enumeration modes stay in agreement.
+      const st = lstatSync(abs);
+      if (st.isSymbolicLink()) continue;
+      if (!st.isFile()) continue;
+    } catch {
+      continue;
+    }
+    files.push(abs);
+  }
+  return { mode: 'git', files, gitIgnored: git.ignored, matcher };
+}
+
+export function walkFiles(root, ignore) {
+  return listFiles(root, ignore).files;
 }
 
 export const isText = (path) =>

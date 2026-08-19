@@ -106,10 +106,12 @@ for (const abs of targets) {
             raw,
             status: c.ignored ? 'not-scanned' : 'missing',
             // Which side put it out of reach: todokeeper's defaults, or the
-            // audited repo's own `.todokeeper.json`. Same bucket, and only the
-            // second one is the audited party choosing what the audit sees.
+            // audited repo's own `.todokeeper.json` / `.gitignore`. Same
+            // bucket, and only the second one is the audited party choosing
+            // what the audit sees.
             ignoredBy: c.ignoredBy ?? null,
             ignoredByConfig: c.ignoredByConfig ?? false,
+            ignoredBySource: c.ignoredBySource ?? null,
             commit: null,
           });
           continue;
@@ -178,7 +180,13 @@ if (droppedReferents > 0) {
 
 if (asJson) {
   await writeStdout(`${jsonSafe({
-    root, minDays, entries: results, unreadTargets, droppedEntries, entryCap: MAX_ENTRIES,
+    root, minDays,
+    // `'git'` or `'walk'`. On `'walk'` nothing consulted `.gitignore`, so the
+    // file set behind every `referent-missing` and every suppression below was
+    // a different one. Emitted here for the same reason `dead --json` emits it:
+    // a consumer reading this payload alone has no other way to tell.
+    enumeration: index.mode,
+    entries: results, unreadTargets, droppedEntries, entryCap: MAX_ENTRIES,
     droppedReferents, referentCap: MAX_REFERENTS,
   })}\n`);
   process.exit(0);
@@ -197,7 +205,17 @@ const short = (s, n = 72) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const day = (iso) => (iso ? iso.slice(0, 10) : '—');
 
 console.log(`todokeeper stale — ${root}`);
-console.log(`${results.length} live entries across ${targets.length - unreadTargets.length} file(s)\n`);
+console.log(`${results.length} live entries across ${targets.length - unreadTargets.length} file(s)`);
+// Said every run, for the same reason `dead` says it. `stale` never prints file
+// CONTENT, so the stakes are lower than they are there -- but the mode still
+// decides which referents exist to be dated, so a `referent-missing` verdict
+// and the suppression list below both mean something different under each.
+if (index.mode === 'git') {
+  console.log('Enumeration: git — .gitignore, .git/info/exclude and your global excludes all applied.\n');
+} else {
+  console.log('Enumeration: directory walk — this root is not a git work tree, so .gitignore was');
+  console.log('NOT consulted. `ignore` in .todokeeper.json is the only exclusion in effect here.\n');
+}
 
 if (unreadTargets.length) {
   console.log(`UNREAD TARGET (${unreadTargets.length}): ${unreadTargets.map(safeField).join(', ')}`);
@@ -219,12 +237,13 @@ const suppressed = results.flatMap(
 );
 if (suppressed.length) {
   console.log(`EXCLUDED BY THIS REPO'S OWN CONFIG (${suppressed.length}) — not by todokeeper's defaults`);
-  console.log('`.todokeeper.json` ships inside the repo being audited, so this bucket is the');
-  console.log('audited party choosing what the audit may see. Read these before treating a');
-  console.log('`not-scanned` referent as out of scope:');
+  console.log('`.todokeeper.json` and `.gitignore` both ship inside the repo being audited, so');
+  console.log('this bucket is the audited party choosing what the audit may see. Read these');
+  console.log('before treating a `not-scanned` referent as out of scope:');
   for (const s of suppressed) {
+    const where = s.ref.ignoredBySource === 'gitignore' ? '.gitignore' : '.todokeeper.json';
     console.log(`  ${safeField(s.file)} :: ${safeField(short(s.lead))}`);
-    console.log(`    \`${safeField(s.ref.raw)}\` — under \`${safeField(s.ref.ignoredBy)}\``);
+    console.log(`    \`${safeField(s.ref.raw)}\` — under \`${safeField(s.ref.ignoredBy)}\` (${where})`);
   }
   console.log('');
 }
