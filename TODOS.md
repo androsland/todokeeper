@@ -209,6 +209,33 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   split would move, which it already computes.
   (2026-08-19)
 
+## Triage
+
+- **The partition in `skills/next/SKILL.md` quotes numbers from this file, and
+  nothing keeps them true.** (writing the triage skill, 2026-08-19) The skill
+  opens with 43 live entries split 19 decided / 6 ready / 9 design-owed / 9
+  observed, because the ratio — six of forty-three actually ready — is the entire
+  argument for why it triages instead of burning down. That table was counted by
+  hand on the day it was written and is already a snapshot: every entry this
+  repo files or retires moves it, and no check compares it against
+  `measure.mjs`'s live count. It degrades toward being wrong in the direction
+  that weakens the argument rather than overstates it, since decided entries
+  accumulate faster than ready ones get resolved. A shipped illustration that
+  says "measured on the repo this was written in" and carries its date is the
+  cheap version; recounting on every run is the expensive one and would put a
+  classifier in the loop, which the skill exists to argue against.
+
+- **Nothing separates a decided entry from one whose revisit condition has
+  since fired.** (writing the triage skill, 2026-08-19) Several entries here
+  are decided *conditionally* — "revisit if a non-JS repo becomes a primary
+  consumer", "revisit only with a case where the argument is noise", "revisit
+  if lib.mjs ever gains a consumer that is not one of these three scripts". The
+  condition is prose about the world outside the repo, so no scan can evaluate
+  it, and an entry whose trigger fired last month reads identically to one whose
+  never will. Named as a non-goal in the skill. The most that is available is
+  surfacing the revisit clause to whoever is triaging, which the skill does and
+  which is not the same as checking it.
+
 ## Untrusted input
 
 - **A heading that opens with a completed word is read as an archive.**
