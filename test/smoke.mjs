@@ -99,6 +99,16 @@ function buildFixture() {
   put('docs/guide.md', '# guide\n');
   put('internal/secret.ts', 'export const s = 1;\n');
   put('node_modules/dep/index.js', 'module.exports = 1;\n');
+  // The call-form pair. `stillCalled` is defined and called in code and nowhere
+  // writes the empty-paren form; `wasCalled()` exists only as a tombstone
+  // comment. A referent written `stillCalled()` must reach the first and must
+  // NOT drag the second along with it.
+  put('src/calls.ts', [
+    '// `wasCalled()` went away with the old pipeline — nothing calls it now.',
+    'export function stillCalled(n) { return n + 1; }',
+    'export const total = stillCalled(1);',
+    '',
+  ].join('\n'));
 
   // `ignore` REPLACES the defaults rather than merging with them, so the
   // defaults are restated here; `internal` is the one this config adds.
@@ -116,7 +126,9 @@ function buildFixture() {
     '- **A glob under a default-ignored dir** — `node_modules/**/*.js` is noise.',
     '- **A glob under a config-ignored dir** — `internal/*.ts` is excluded here.',
     '- **A path under a config-ignored dir** — `internal/secret.ts` too.',
-    '- **A symbol** — `buildFileIndex` changed shape.',
+    '- **A symbol** — \`buildFileIndex\` changed shape.',
+    '- **A call form still called** — \`stillCalled()\` needs a second argument.',
+    '- **A call form with only a tombstone** — \`wasCalled()\` is gone.',
     '- **A route** — `/el/` still redirects.',
     '- **A package** — `@scope/pkg` is pinned.',
     '- **A directory** — `docs` needs an index.',
@@ -153,6 +165,7 @@ function testClassifier(root) {
     ['internal/*.ts', 'glob'],
     ['docs/*.md', 'glob'],
     ['buildFileIndex', 'symbol'],
+    ['stillCalled()', 'symbol'],
     ['/el/', 'route'],
     ['@scope/pkg', 'external'],
     ['https://example.com', 'external'],
@@ -191,6 +204,25 @@ function testClassifier(root) {
   check('classify `/src/app.ts` resolves to the root-relative file',
     rooted && rooted.resolved === 'src/app.ts',
     `got resolved=${rooted ? String(rooted.resolved) : 'none'}`);
+
+  // The needle is what the repo is searched for, and for a call form it is the
+  // one thing this branch decides. Asserting the KIND proves nothing here: every
+  // case below is already a symbol, and the defect was that all three shapes were
+  // searched for literally.
+  const call = classifyReferent('stillCalled()', index);
+  check('classify \`stillCalled()\` searches for the call, not the empty-paren form',
+    call && call.needle === 'stillCalled(',
+    `got needle=${call ? call.needle : 'none'}`);
+  const plainSymbol = classifyReferent('buildFileIndex', index);
+  check('classify \`buildFileIndex\` leaves a paren-free symbol alone',
+    plainSymbol && plainSymbol.needle === 'buildFileIndex',
+    `got needle=${plainSymbol ? plainSymbol.needle : 'none'}`);
+  // A call carrying its own literal argument is already specific — widening it
+  // would search for a prefix of a string the entry deliberately quoted whole.
+  const withArgs = classifyReferent("t('errors.exportFailed')", index);
+  check('classify a call WITH arguments is left literal',
+    withArgs && withArgs.needle === "t('errors.exportFailed')",
+    `got needle=${withArgs ? withArgs.needle : 'none'}`);
 
   // Classifying with no index must not throw — the documented degraded mode.
   for (const [input] of cases) {
@@ -284,7 +316,33 @@ function testReportsSurfaceSuppression(root) {
     !stale.includes('Something finished'));
 }
 
-// ------------------------------------- 5. no literal control byte in source
+// --------------------------------- 5. call-form referents reach their symbol
+
+/**
+ * The classifier check above proves the needle; this proves the verdict, which
+ * is the part a reader acts on. Both directions matter and they pull opposite
+ * ways: `stillCalled()` must reach the definition and the call (it read
+ * DOC-ONLY before, because the only literal `stillCalled()` in the fixture is
+ * the TODOS entry naming it), and `wasCalled()` must stay COMMENT-ONLY, because
+ * a fix that reported every call form as alive would be worse than the defect.
+ */
+function testCallFormVerdicts(root) {
+  const out = execFileSync('node', [join(SCRIPTS, 'dead.mjs'), '--root', root, '--json'],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const byRaw = new Map(JSON.parse(out).referents.map((r) => [r.raw, r]));
+
+  const live = byRaw.get('stillCalled()');
+  check('a call form whose symbol is still called reads CODE',
+    live && live.verdict === 'CODE',
+    `got ${live ? live.verdict : 'no such referent'}`);
+
+  const gone = byRaw.get('wasCalled()');
+  check('a call form with only a tombstone stays COMMENT-ONLY',
+    gone && gone.verdict === 'COMMENT-ONLY',
+    `got ${gone ? gone.verdict : 'no such referent'}`);
+}
+
+// ------------------------------------- 6. no literal control byte in source
 
 /**
  * In a tool whose entire subject is control characters, a stray one inside
@@ -771,6 +829,7 @@ try {
     ['provenance', testProvenance],
     ['scripts', testScripts],
     ['reports', testReportsSurfaceSuppression],
+    ['call-form', testCallFormVerdicts],
     ['control-bytes', testNoControlBytes],
     ['counts', testCounts],
     ['piped-json', testPipedJson],

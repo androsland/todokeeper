@@ -63,6 +63,36 @@ the point of the hypothetical-referent entry below, not a defect in the file.
   and README.md instead of a heuristic.
   (measured across 11 deferred-work files, 2026-08-18)
 
+- **A call that carries its own arguments is still searched for literally.**
+  A referent written `safeField()` now searches for the call site; one written
+  t('errors.exportFailed') — 34 of the 2,878 referents in the files on hand — is
+  compared whole, and an interpolation like ${...} around a call (4) is not a
+  name at all. Deliberate: the quoted argument is exactly what makes such a
+  referent specific, and widening it to the bare callee would search a repo for
+  t( , which matches every translated string in it. Revisit only with a case
+  where the argument is noise rather than the point.
+  (measured across 11 deferred-work files, 2026-08-19)
+
+- **A bare name and its call form are still two referents.** The needles differ —
+  `buildFileIndex` against buildFileIndex( — so a file naming both gets a row for
+  each and the two `named by` lists never merge. The one place they DO merge is
+  where the file already writes the opening-paren form itself, which the strip
+  turns into the same string; that is one referent in the corpus. Collapsing the
+  general case needs a symbol identity that a text scan does not have.
+  (measured, 2026-08-19)
+
+- **The needle is a substring, so a qualified call answers for the bare one.**
+  Searching for max( also matches Math.max( ; import_customers( matches
+  public.import_customers( ; resize( matches cv2.resize( . All three are in the
+  corpus, all three were read by hand, and in all three the match names the
+  symbol the entry meant — a schema-qualified call and a method call are the same
+  function. What it cannot rule out is a same-named function in an unrelated
+  module: that reports CODE for a symbol the entry's own repo really did delete,
+  which is the false-negative direction this tool exists to avoid. Ruling it out
+  needs per-language name resolution. It is a widening of a limit the scan
+  already had, not a new one — the empty-paren form was a substring test too.
+  (measured, 2026-08-19)
+
 ## Comment detection
 
 - **`scanFile` does not parse string literals.** A needle inside a quoted string
@@ -338,6 +368,36 @@ the point of the hypothetical-referent entry below, not a defect in the file.
   would make the honest limit above read as covered.
 
 ## Completed
+
+- **A referent written as a call was answered with a fact about punctuation.**
+  `safeField()` in this repo's own file reported ABSENT against 22 call sites, and
+  `process.exit()` reported COMMENT-ONLY — a probable tombstone — because the only
+  literal empty-paren `process.exit()` in the tree sits in a `lib.mjs` docblock
+  while every real call carries an argument. One line explains it: `NOT_A_PATH`
+  contains an open paren, so every call form leaves `classifyReferent` through
+  that branch with its needle untouched, and the empty-paren strip that was
+  already written for this sat on the final return, where a string containing
+  parens can never arrive. Dead code reading as coverage.
+
+  The strip now lives in `symbolNeedle` and both returns use it, and it keeps the
+  OPENING paren: searching for safeField( matches the definition and every call
+  site, where the bare name would match reopen for open. Measured across the 11
+  deferred-work files on hand in 10 repos — 2,878 distinct referents, 86 of them
+  call form in 9 of the 10: **31 verdicts change and every one is a call form.**
+  COMMENT-ONLY 21 -> 4, ABSENT 16 -> 4, DOC-ONLY 2 -> 0, and the 8 survivors are
+  the genuine tombstones. The before and after runs are taken back to back per
+  repo, because an earlier pair drifted when one corpus repo committed to its own
+  deferred-work file between them — the first comparison showed 6 phantom row
+  changes that had nothing to do with the fix. **The bare-name variant was
+  measured and rejected:** it flips sql(), open() and fstat() to CODE on a
+  substring of something unrelated, which is a dead thing reported as alive.
+
+  Proven by regression rather than by assertion: with `symbolNeedle` stubbed to
+  the identity, 2 checks go red. The negative control is the half that matters —
+  a call form whose only occurrence is a tombstone comment stays COMMENT-ONLY
+  with and without the fix, so a change that reported every call form as alive
+  could not pass. Suite 125 -> 140 checks. Deferrals in
+  `## Referent classification` above.
 
 - **SHIPPED 2026-08-19 — the scan asks git what is in the repo, so `.gitignore`
   is honoured; and an `ignore` entry that cannot match is now an error instead of

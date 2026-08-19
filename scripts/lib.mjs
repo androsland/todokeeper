@@ -1008,6 +1008,46 @@ const NOT_A_PATH = /["'`<>()\[\]{}=;,!$|&^~]|\.\.|@|::|…|^-/;
 const GIT_REF = /^(origin|upstream|fork|feat|feature|fix|hotfix|bugfix|chore|ci|docs|refactor|test|perf|build|style|revert|release|wip|spike|exp)\/[\w.-]+$/i;
 
 /**
+ * The string to search a repo for, given a symbol referent.
+ *
+ * A referent written in CALL form — `safeField()`, `.map()`, `process.exit()` — was
+ * searched literally, so its verdict turned on whether some file happened to quote the
+ * same empty-paren form rather than on whether the symbol is still called. In this repo
+ * `process.exit()` read COMMENT-ONLY because the only literal `process.exit()` sits in a
+ * docblock below, while every real call carries an argument; `safeField()` read ABSENT
+ * against 22 call sites.
+ *
+ * Dropping the CLOSING paren and keeping the opening one is what fixes it. `safeField(`
+ * matches the definition and every call site; the bare name would match `reopen` for
+ * `open` and any prose word. Measured across 11 deferred-work files in 10 repos, 2,878
+ * distinct referents, 86 of them call form in 9 of the 10 repos: 31 verdicts change and
+ * every one is a call-form referent — COMMENT-ONLY 21 -> 4, ABSENT 16 -> 4, DOC-ONLY
+ * 2 -> 0, and the 8 survivors are the genuine tombstones. Searching the bare name was
+ * measured too and is worse in the direction that matters: `sql()`, `open()` and
+ * `fstat()` each flip to CODE on a substring of something unrelated, which is a dead
+ * thing reported as alive — the one error this tool exists to prevent.
+ *
+ * The search is still a substring test, so `max(` also matches `Math.max(` and
+ * `import_customers(` matches `public.import_customers(`. All three corpus cases that
+ * rest only on such a match were read by hand and each names the symbol its entry meant,
+ * but a same-named function in an unrelated module is indistinguishable — the standing
+ * precision limit of a text scan, widened slightly here.
+ *
+ * Only the EMPTY-paren form is touched. A call carrying a literal argument —
+ * a translation call carrying a quoted key, 34 in the corpus — is already specific,
+ * and the 4 spans that wrap a call inside a template interpolation name nothing at all.
+ * Quoting either shape here would also plant it in this repo's own report, which is how
+ * a docblock becomes a false tombstone for the string it is describing.
+ *
+ * Every call form leaves `classifyReferent` through the `NOT_A_PATH` branch, because
+ * `(` is in that character class. That is why the same strip sitting on the final
+ * return could never fire.
+ */
+function symbolNeedle(stripped) {
+  return stripped.replace(/^(.+)\(\)$/, '$1(');
+}
+
+/**
  * Decide what a backticked span IS, resolving against the repo rather than
  * guessing from shape alone. The order matters: anything with whitespace is a
  * command or a sentence and is not looked up at all; a package specifier and a
@@ -1100,7 +1140,7 @@ export function classifyReferent(raw, index = null) {
   // Unresolved. Everything below is a judgement about what the string WOULD be
   // if it were a path, and each test exists to keep a non-path out.
   if (DOMAIN.test(stripped)) return { kind: 'external', needle: stripped, raw };
-  if (NOT_A_PATH.test(stripped)) return { kind: 'symbol', needle: stripped, raw };
+  if (NOT_A_PATH.test(stripped)) return { kind: 'symbol', needle: symbolNeedle(stripped), raw };
   // Checked only AFTER the index has had its chance, so a real repo directory
   // that happens to share a dependency's name still resolves as a path.
   if (isDependencyPath(stripped, index)) return { kind: 'external', needle: stripped, raw };
@@ -1134,7 +1174,7 @@ export function classifyReferent(raw, index = null) {
       raw,
     };
   }
-  return { kind: 'symbol', needle: stripped.replace(/\(\)$/, ''), raw };
+  return { kind: 'symbol', needle: symbolNeedle(stripped), raw };
 }
 
 /**
