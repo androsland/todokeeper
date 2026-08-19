@@ -35,6 +35,11 @@
  *  - The control-byte scan covers the four `scripts/*.mjs` and this file. Not
  *    SKILL.md, not README.md, not any config or fixture — and nothing runs this
  *    suite for you, so it protects the edits of whoever remembers to run it.
+ *  - The symlink escapes are covered only where the PLATFORM can create a
+ *    symlink. An unprivileged Windows account cannot, and phase 8 then prints
+ *    a SKIP and proves nothing about links — read the run's output, not this
+ *    file, to know which happened. The skip is loud on purpose: the same four
+ *    checks passing and never running look identical in a summary line.
  *  - It runs on one platform, in one shell, with whatever git is installed.
  *    `stale.mjs` shells out to `git log -S`; a git old enough to lack a flag it
  *    uses fails here as a test error, which is the right outcome but is not the
@@ -50,7 +55,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -501,8 +506,28 @@ function buildEnumerationFixture({ init }) {
     '- **A path under a path-ignored dir** — `web/test-results/report.html` is build output.',
     '- **A path the ignore list does not cover** — `other/test-results/keep.html` stays.',
     '- **A tracked file deleted from disk** — `src/removed.ts` went away.',
+    '- **A symbol only a file OUTSIDE the repo defines** — `outsideCanary` is not ours.',
     '',
   ].join('\n'));
+
+  // Two symlinks, planted before the commit so `git add -A` TRACKS them. Git
+  // stores a symlink as a blob holding its target string and `ls-files` reports
+  // it exactly like a regular file, so the enumeration is handed both:
+  //   escape-link.md  -> a gitignored file. The LINK is not ignored, so it
+  //                      survives every filter above; following it hands back
+  //                      the very bytes this phase exists to keep out. This is
+  //                      a bypass of the fix, not a gap beside it.
+  //   outside-link.md -> a file outside the repo entirely, for the broader
+  //                      "nothing outside the repository is read" contract.
+  // Creation is guarded because an unprivileged Windows account cannot make
+  // one; phase 8 reports a loud SKIP rather than passing quietly if so.
+  try {
+    writeFileSync(`${root}-outside.txt`, "const outsideCanary = 'CANARY-OUTSIDE-2260';\n");
+    symlinkSync(join(IGNORED_DIR, 'notes.md'), join(root, 'escape-link.md'));
+    symlinkSync(`${root}-outside.txt`, join(root, 'outside-link.md'));
+  } catch {
+    rmSync(`${root}-outside.txt`, { force: true });
+  }
 
   if (init) {
     const git = (...args) => execFileSync('git', args, { cwd: root, stdio: 'pipe' });
@@ -516,6 +541,20 @@ function buildEnumerationFixture({ init }) {
   // which is the state `git ls-files --cached` reports and a stat has to catch.
   rmSync(join(root, 'src/removed.ts'));
   return root;
+}
+
+/**
+ * Did the fixture actually manage to create the symlinks? Asked by lstat rather
+ * than carried as a flag, so the answer is about the tree the code under test
+ * will see. `existsSync` would FOLLOW the link and answer about the target.
+ */
+function symlinksPlanted(root) {
+  try {
+    return lstatSync(join(root, 'escape-link.md')).isSymbolicLink()
+      && lstatSync(join(root, 'outside-link.md')).isSymbolicLink();
+  } catch {
+    return false;
+  }
 }
 
 function testGitEnumeration() {
@@ -576,6 +615,36 @@ function testGitEnumeration() {
     check('the gitignored canary does not', !json.includes('CANARY-IGNORED-9002'),
       'a .gitignore line is the only control on personal data in some repos');
 
+    // A symlink is the one shape that walks straight through everything above:
+    // `ls-files` lists it, `ignoredBy` sees an unignored name, and a `statSync`
+    // would resolve it to a perfectly ordinary file on the far side. Both links
+    // were tracked by the fixture, so the enumeration was OFFERED both escapes.
+    if (symlinksPlanted(root)) {
+      check('a tracked symlink is not indexed', !index.byPath.has('escape-link.md'),
+        'lstat, not stat — git lists a symlink exactly like a file');
+      check('...nor the one pointing outside the repo',
+        !index.byPath.has('outside-link.md'));
+      check('a symlink into the gitignored tree does not leak its target',
+        !json.includes('CANARY-IGNORED-9002'),
+        'the link itself is NOT gitignored, so this bypasses the fix rather than testing it');
+      check('a symlink out of the repo does not leak its target',
+        !json.includes('CANARY-OUTSIDE-2260'),
+        'README promises nothing outside the repository is read');
+    } else {
+      console.error('SKIP  symlink escapes — this platform would not create one.');
+      console.error('      Phase 8 proves .gitignore handling here and NOTHING about symlinks.');
+    }
+
+    // `stale` never prints file CONTENT, but the mode still decides which
+    // referents exist to be dated, so a reader of `stale` ALONE needs the same
+    // sentence. It went unsaid there while a comment in lib.mjs claimed every
+    // report printed it.
+    const staleJson = execFileSync('node', [join(SCRIPTS, 'stale.mjs'), '--root', root, '--json'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    check('stale.mjs --json declares the enumeration too',
+      JSON.parse(staleJson).enumeration === 'git',
+      'both reports, or the claim in lib.mjs is false for one of them');
+
     const text = execFileSync('node', [join(SCRIPTS, 'dead.mjs'), '--root', root],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     check('the report says .gitignore put the referent out of scope',
@@ -583,6 +652,7 @@ function testGitEnumeration() {
       'a reader sent to .todokeeper.json would not find the line');
   } finally {
     rmSync(root, { recursive: true, force: true });
+    rmSync(`${root}-outside.txt`, { force: true });
   }
 }
 
@@ -609,14 +679,29 @@ function testWalkFallback() {
       !index.byPath.has('web/test-results/report.html')
       && index.byPath.has('other/test-results/keep.html'),
       'one compiled matcher serves both modes');
+    // The two modes must agree about symlinks or the fallback becomes the
+    // escape. A Dirent is neither a file nor a directory for a link, which is
+    // why this holds — assert it, so switching the walk to statSync reds here.
+    if (symlinksPlanted(root)) {
+      check('the walk does not follow a symlink either',
+        !index.byPath.has('escape-link.md') && !index.byPath.has('outside-link.md'),
+        'both modes must agree, or the downgrade path is the way in');
+    }
 
     const text = execFileSync('node', [join(SCRIPTS, 'dead.mjs'), '--root', root],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     check('the fallback is announced, not silent',
       text.includes('not a git work tree') && text.includes('.gitignore was'),
       'a downgrade nobody is told about reads as coverage');
+
+    const staleText = execFileSync('node', [join(SCRIPTS, 'stale.mjs'), '--root', root],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    check('stale.mjs announces the downgrade as well',
+      staleText.includes('not a git work tree') && staleText.includes('.gitignore was'),
+      'a clean stale report on a walk root would otherwise read as coverage');
   } finally {
     rmSync(root, { recursive: true, force: true });
+    rmSync(`${root}-outside.txt`, { force: true });
   }
 }
 

@@ -169,15 +169,28 @@ at load with a message naming the entry and the reason. What no validator can
 see is a well-formed entry naming a path that does not exist: `web/test-resluts`
 passes every check and excludes nothing.
 
+**A symlink is never followed, in either mode.** Git tracks a symlink as a blob
+holding its target string and lists it exactly like a regular file, so the
+enumeration is handed links as readily as files — and following one leaves the
+file set the two paragraphs above just described. A link pointing into a
+gitignored directory is not itself gitignored, so it passes every filter and
+hands back the bytes `.gitignore` was keeping out; a link pointing outside the
+repo breaks the "nothing outside the repository is read" contract below. Both
+are dropped. The cost is real and is the accepted trade: a repo that reaches a
+genuine doc through a symlink does not get that file scanned, and is told
+nothing about it.
+
 **`ignore` REPLACES the defaults, it does not merge with them.** Restate the
 defaults you still want.
 
-Three things this does not cover, stated so the section is not read as more than
+Four things this does not cover, stated so the section is not read as more than
 it is. Personal data that was never gitignored and never named in `ignore` is
 still scanned, and nothing can detect it — there is no property that separates
 such a file from source. A tracked file matched by a `.gitignore` pattern is
-still tracked, so git lists it and so does this. And the enumeration bounds what
-this tool READS; it is not a security boundary for anything else on the machine.
+still tracked, so git lists it and so does this. A symlink is skipped silently,
+so a file you expected in the scan can be absent with no line saying why. And
+the enumeration bounds what this tool READS; it is not a security boundary for
+anything else on the machine.
 
 ## What it does NOT do
 

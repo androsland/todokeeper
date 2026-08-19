@@ -7,7 +7,7 @@
  * that guessed at it would be wrong silently.
  */
 
-import { readFileSync, existsSync, statSync, readdirSync, realpathSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, lstatSync, readdirSync, realpathSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
@@ -1400,6 +1400,10 @@ function walkDisk(root, matcher) {
       // or `SESSION.md` out of the scan without inventing a directory for them.
       if (ignoredBy(path, matcher)) continue;
       const abs = join(dir, item.name);
+      // A Dirent reports the entry's OWN type, so a symlink is neither a
+      // directory nor a file and falls through both arms unfollowed. That is
+      // load-bearing rather than incidental: it is what keeps this mode
+      // agreeing with the lstat in listFiles. Never switch these to statSync.
       if (item.isDirectory()) stack.push([path, abs]);
       else if (item.isFile()) out.push(abs);
     }
@@ -1440,7 +1444,18 @@ export function listFiles(root, ignore) {
     if (ignoredBy(path, matcher)) continue;
     const abs = join(key, path);
     try {
-      if (!statSync(abs).isFile()) continue;
+      // lstat, never stat. Git stores a symlink as a blob holding its target
+      // string and lists it like any other path, so `ls-files` hands us links
+      // as readily as files. `statSync` FOLLOWS one, and `readFileSync`
+      // downstream follows it again. Two escapes, and the second is the one
+      // that matters here: a tracked link whose target sits INSIDE a
+      // gitignored directory is not itself ignored, so it passes every filter
+      // above and yields exactly the bytes this change exists to stop being
+      // read. A link's own content is its target string -- nothing worth
+      // scanning -- so drop it, and both enumeration modes stay in agreement.
+      const st = lstatSync(abs);
+      if (st.isSymbolicLink()) continue;
+      if (!st.isFile()) continue;
     } catch {
       continue;
     }

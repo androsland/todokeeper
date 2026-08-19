@@ -263,6 +263,25 @@ the point of the hypothetical-referent entry below, not a defect in the file.
 
 ## Enumeration
 
+- **A symlink is dropped with no line saying so.** (security + privacy review of
+  the enumeration change, 2026-08-19) Both reviewers independently found that
+  the first cut of the git enumeration used `statSync`, which FOLLOWS a link —
+  and git lists a tracked symlink exactly like a file, so a link into the
+  gitignored tree bypassed the whole fix while the suite stayed green. Fixed
+  with `lstatSync` + skip, matching what the Dirent-based walk always did. The
+  residue is the skip itself: a repo that reaches a real doc through a symlink
+  loses it from the scan and is told nothing. **Do not "fix" this by following
+  the link and re-checking the target against `.gitignore`** — that is a second
+  ignore evaluation written by us, on the resolved path, and getting it wrong
+  fails in the direction that reads the file. If it is ever wanted, the shape is
+  `git check-ignore` on the resolved target plus a containment check, and it
+  needs its own canary test through a link.
+- **The symlink tests do not run where symlinks cannot be created.** (same
+  review, 2026-08-19) An unprivileged Windows account cannot make one, so phase
+  8 prints a SKIP and covers nothing about links there. The skip is loud
+  because the alternative — four checks silently not running — is
+  indistinguishable from four checks passing.
+
 - **A well-formed `ignore` entry naming a path that does not exist is still a
   silent no-op.** (found fixing the gitignore defect, 2026-08-19) `loadConfig`
   now rejects every shape that CANNOT match — glob, absolute, backslash, `..`,

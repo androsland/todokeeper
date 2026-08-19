@@ -180,7 +180,13 @@ if (droppedReferents > 0) {
 
 if (asJson) {
   await writeStdout(`${jsonSafe({
-    root, minDays, entries: results, unreadTargets, droppedEntries, entryCap: MAX_ENTRIES,
+    root, minDays,
+    // `'git'` or `'walk'`. On `'walk'` nothing consulted `.gitignore`, so the
+    // file set behind every `referent-missing` and every suppression below was
+    // a different one. Emitted here for the same reason `dead --json` emits it:
+    // a consumer reading this payload alone has no other way to tell.
+    enumeration: index.mode,
+    entries: results, unreadTargets, droppedEntries, entryCap: MAX_ENTRIES,
     droppedReferents, referentCap: MAX_REFERENTS,
   })}\n`);
   process.exit(0);
@@ -199,7 +205,17 @@ const short = (s, n = 72) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const day = (iso) => (iso ? iso.slice(0, 10) : '—');
 
 console.log(`todokeeper stale — ${root}`);
-console.log(`${results.length} live entries across ${targets.length - unreadTargets.length} file(s)\n`);
+console.log(`${results.length} live entries across ${targets.length - unreadTargets.length} file(s)`);
+// Said every run, for the same reason `dead` says it. `stale` never prints file
+// CONTENT, so the stakes are lower than they are there -- but the mode still
+// decides which referents exist to be dated, so a `referent-missing` verdict
+// and the suppression list below both mean something different under each.
+if (index.mode === 'git') {
+  console.log('Enumeration: git — .gitignore, .git/info/exclude and your global excludes all applied.\n');
+} else {
+  console.log('Enumeration: directory walk — this root is not a git work tree, so .gitignore was');
+  console.log('NOT consulted. `ignore` in .todokeeper.json is the only exclusion in effect here.\n');
+}
 
 if (unreadTargets.length) {
   console.log(`UNREAD TARGET (${unreadTargets.length}): ${unreadTargets.map(safeField).join(', ')}`);

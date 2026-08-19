@@ -89,6 +89,13 @@ glob in `ignore` is rejected at load with a message saying so, as are an
 absolute path, a backslash, `..`, and an empty or padded entry. Every one of
 those used to be accepted and match nothing, in silence.
 
+**A symlink is never followed, in either mode.** Git lists a tracked symlink
+exactly like a regular file, and following one would undo the paragraph above —
+a link into a gitignored directory is not itself ignored, so it passes every
+filter and hands back the bytes `.gitignore` was keeping out. Links are dropped
+instead, silently: a file reached only through one is absent from the scan with
+no line saying why.
+
 `ignore` REPLACES the defaults rather than merging with them, so restate the
 ones you still want.
 
@@ -202,6 +209,11 @@ nothing else; it does nothing for a directory of client records that was simply
 committed, and no property of such a file distinguishes it from source. If a
 tree must never be read, name it in `ignore` — do not rely on this having
 noticed.
+
+**It cannot see a file reached only through a symlink.** Links are dropped
+rather than followed, in both enumeration modes, because following one is a way
+back into the gitignored tree the enumeration just excluded. Nothing reports the
+drop, so a scan can be quietly narrower than the repo looks.
 
 **A repo-wide rename or restructure blinds it.** `git log -S` finds when a phrase
 last changed; moving a file rewrites every entry's history at once, so for some
