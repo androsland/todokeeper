@@ -241,6 +241,22 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   which is a benchmark, not a smoke test, so nothing would notice if a cap were
   deleted. (2026-08-16, narrowed 2026-08-17, narrowed 2026-08-19)
 
+- **Phase B's oracle has a branch no configuration can reach.**
+  `isEntryStartOracle` tests `entryStyles.includes('bold')`, but the style is
+  named `bold-lead` and the set is closed — a config naming `bold` is rejected
+  with `has no style "bold". Known styles: bullet, numbered, bold-lead`. So that
+  line cannot return true whatever the repo does. Two smaller divergences sit
+  beside it: the oracle never strips a blockquote prefix, and its `(\d+)` is
+  uncapped where `lib.mjs` caps a numbered marker at nine digits. None of the
+  three is reachable today, because phase B runs only `DEFAULTS.entryStyles`,
+  which is `['bullet']`. The oracle's docblock already disclaims completeness,
+  and the failure direction is the safe one — a future fixture that reaches a
+  divergence makes phase B fail rather than falsely pass. What it costs is the
+  message: the failure points at `entries()` when the bug is in the oracle. The
+  fix is to rename the branch to `bold-lead` and widen phase B's styles, not to
+  delete the oracle, which exists precisely so the walk is not compared against
+  itself. (2026-08-21)
+
 - **`suspect` is only as good as the git history it reads.** It was unexercised
   entirely until a repo with month-old entries was tested — the first test repo's
   entries were all written the same week, so the code path returned zero every
@@ -567,11 +583,40 @@ Everything older than these moved to `TODOS-DONE.md` when this file crossed the
 entries still impose were lifted into `CLAUDE.md` on the way out.
 
 This section was cut to the five most recent at that split and has grown back
-to ten since, so it is **not** "the five most recent" any more and the line
+to eleven since, so it is **not** "the five most recent" any more and the line
 saying it was has been removed rather than left to read as current. The next
 cut is blocked on a different fact: `## Completed` has no entries for the work
 merged as PRs #6 and #7, and archiving a stale section keeps five older entries
 while archiving the recent ones. Write those two first, then split.
+
+- **A relative `--root` made `ABSENT` unreachable, and the suite could not see
+  it because every fixture passed an absolute one.** `--root` was used verbatim
+  while `repoRoot()` always returns absolute, so the two path families crossed:
+  `resolveTargets` builds `join(root, target)` and inherits the root's shape,
+  but `listFiles` always returns absolute. `dead.mjs`'s one-line exclusion —
+  "the deferred-work file names everything; it proves nothing" — is a `Set.has`
+  between them, so under a relative root it matched nothing, the deferred-work
+  file entered the scanned corpus, and every referent scored a free doc hit from
+  its own entry. Measured on a fixture naming a symbol that exists nowhere:
+  `--root <absolute>` reported `neverThing | ABSENT`, `--root .` reported
+  `DOC-ONLY` with a hit on `TODOS.md`. `--root .` is the most natural way to
+  invoke the tool, and `ABSENT` is the verdict the script exists to produce.
+  Fixed with `rootFromArgvOrExit` in `lib.mjs` — one entry point rather than the
+  same line repeated in three scripts, which is the shape this repo has already
+  shipped a bug in. The `OrExit` suffix arrived from the security review, which
+  noted the function can end the process while carrying none of the cue
+  `loadConfigOrExit` wears; taken rather than deferred, because a deferral about
+  a name costs more than the rename. It resolves rather than calling `repoRoot(value)`, because
+  `repoRoot` walks up to the work-tree toplevel and would turn `--root web` on a
+  monorepo into an audit of the whole repo reported under the subdirectory's
+  name; and it does not `realpathSync`, because `contained()` realpaths its own
+  operands and resolving links here would rewrite the root an operator asked
+  for. Suite 233 to 241 checks. Mutation-tested three ways: returning the raw
+  argv value fails 6, `repoRoot(value)` fails 1, dropping the missing-value
+  guard fails 1 — each caught by the check that names it. The subdirectory
+  assertion needs a real work tree to have teeth, because outside one `repoRoot`
+  falls back to `resolve(from)` and the rejected design is byte-identical to the
+  shipped one. (2026-08-21)
 
 - **Three drops the index made in silence now say so — and the first draft of
   the check cried wolf on every clean repo.** (bundle 5, 2026-08-21) A dropped

@@ -21,7 +21,7 @@
  */
 
 import {
-  loadConfigOrExit, repoRoot, resolveTargets, sections, entries,
+  loadConfigOrExit, rootFromArgvOrExit, resolveTargets, sections, entries,
   lastCommitTouching, lastCommitChangingPhrase, classifyReferent,
   buildFileIndex, rel, daysBetween, isCompletedHeading,
   readTarget, warnIfHeadingless, safeField, jsonSafe, writeStdout, warnIndexSkips, notedList,
@@ -30,8 +30,7 @@ import {
 
 const argv = process.argv.slice(2);
 const asJson = argv.includes('--json');
-const rootArg = argv.indexOf('--root');
-const root = rootArg !== -1 ? argv[rootArg + 1] : repoRoot();
+const root = rootFromArgvOrExit(argv);
 const minDaysArg = argv.indexOf('--min-days');
 const minDays = minDaysArg !== -1 ? Number(argv[minDaysArg + 1]) : 0;
 

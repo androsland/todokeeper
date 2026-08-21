@@ -26,7 +26,7 @@
 
 import { readFileSync, statSync } from 'node:fs';
 import {
-  loadConfigOrExit, repoRoot, resolveTargets, sections, entries,
+  loadConfigOrExit, rootFromArgvOrExit, resolveTargets, sections, entries,
   classifyReferent, buildFileIndex, walkFiles, isText, rel, isCompletedHeading,
   readTarget, warnIfHeadingless, safeField, jsonSafe, writeStdout, warnIndexSkips, notedList,
   MAX_REFERENTS, MAX_ENTRIES, MAX_FROM,
@@ -34,8 +34,7 @@ import {
 
 const argv = process.argv.slice(2);
 const asJson = argv.includes('--json');
-const rootArg = argv.indexOf('--root');
-const root = rootArg !== -1 ? argv[rootArg + 1] : repoRoot();
+const root = rootFromArgvOrExit(argv);
 
 const config = loadConfigOrExit(root);
 const targets = resolveTargets(root, config);
