@@ -37,9 +37,14 @@
  *    against 4 on the tree before this phase existed — and 3 of those 4 are
  *    collateral, tripping only because the report empties. The rest is still
  *    caught only by the real-repo parity diff described above.
- *  - The control-byte scan covers the four `scripts/*.mjs` and this file. Not
- *    SKILL.md, not README.md, not any config or fixture — and nothing runs this
- *    suite for you, so it protects the edits of whoever remembers to run it.
+ *  - The control-byte scan reads every TRACKED file, binary extensions aside,
+ *    and covers C0-minus-layout, DEL, C1 and the bidi overrides and isolates
+ *    that `safeField` escapes on output. What it still does not cover: a file
+ *    that is not tracked, a binary extension named in `BINARY_EXTS`, and every
+ *    other format character in Unicode — the set is `FIELD_UNSAFE`'s, chosen to
+ *    match the escaping helper rather than to be complete, so a zero-width or a
+ *    tag character passes. And nothing runs this suite for you, so it protects
+ *    the edits of whoever remembers to run it.
  *  - The symlink escapes are covered only where the PLATFORM can create a
  *    symlink. An unprivileged Windows account cannot, and phase 8 then prints
  *    a SKIP and proves nothing about links — read the run's output, not this
@@ -512,10 +517,68 @@ function testHeadinglessWarning() {
  * carries no control byte. This docblock shipped a literal ESC on its first
  * draft, and this phase is what found it.
  */
+/**
+ * Extensions this scan will not read. A DENY list, not an allow list, and the
+ * direction is the point: a tracked file with an unlisted extension IS scanned,
+ * so a `.md` or a `.json` added tomorrow is covered the day it lands. Adding a
+ * binary asset fails this phase loudly and the fix is one line here — which is
+ * the failure this repo wants, because the alternative silently stops scanning
+ * whatever nobody remembered to allow.
+ */
+const BINARY_EXTS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.pdf',
+  '.zip', '.gz', '.tgz', '.woff', '.woff2', '.ttf', '.otf',
+]);
+
+/**
+ * Every TRACKED file, not a hand-kept list of five.
+ *
+ * The list this replaced named the four `scripts/*.mjs` and this file, so a
+ * control byte in `skills/todokeeper/SKILL.md` — a file an agent LOADS AND
+ * FOLLOWS — was exactly as invisible as one in source, and so was one in
+ * `README.md`, `CLAUDE.md` or either TODOS file. `git ls-files` follows the repo
+ * instead, so nobody has to remember to add the next file.
+ *
+ * Falls back to the old five with a loud SKIP when git does not run, because a
+ * narrowed scan reporting like a full one is the failure this phase exists to
+ * prevent.
+ */
+function trackedTextFiles() {
+  const repoRoot = join(SCRIPTS, '..');
+  const res = spawnSync('git', ['-C', repoRoot, 'ls-files', '-z'], { encoding: 'buffer' });
+  if (res.error || res.status !== 0) return null;
+  return res.stdout.toString('utf8').split('\0')
+    .filter(Boolean)
+    .filter((f) => !BINARY_EXTS.has(extensionOf(f)))
+    .map((f) => join(repoRoot, f));
+}
+
+/**
+ * The extension, or the empty string when there is none.
+ *
+ * Written out rather than inlined because `slice(lastIndexOf('.'))` returns the
+ * filename's LAST CHARACTER when the name has no dot — `LICENSE` yields `E` —
+ * and that is only harmless while no entry in `BINARY_EXTS` is one character
+ * long. A deny list has to fail toward scanning; a comparison that silently
+ * changes meaning on extensionless files is the wrong thing to leave load-bearing.
+ */
+function extensionOf(file) {
+  const dot = file.lastIndexOf('.');
+  return dot === -1 ? '' : file.slice(dot).toLowerCase();
+}
+
 function testNoControlBytes() {
-  const files = ['lib.mjs', 'dead.mjs', 'stale.mjs', 'measure.mjs']
-    .map((f) => join(SCRIPTS, f))
-    .concat([fileURLToPath(import.meta.url)]);
+  let files = trackedTextFiles();
+  if (files === null) {
+    console.error('SKIP  full-tree control-byte scan — `git ls-files` did not run here; '
+      + 'falling back to the four scripts and this file.');
+    files = ['lib.mjs', 'dead.mjs', 'stale.mjs', 'measure.mjs']
+      .map((f) => join(SCRIPTS, f))
+      .concat([fileURLToPath(import.meta.url)]);
+  }
+  check('the control-byte scan reads the tracked tree, not five files',
+    files.length >= 10,
+    `scanned ${files.length} file(s)`);
 
   for (const file of files) {
     const bytes = readFileSync(file);
@@ -523,16 +586,38 @@ function testNoControlBytes() {
     for (let i = 0; i < bytes.length; i += 1) {
       const b = bytes[i];
       const isLayout = b === 0x09 || b === 0x0A || b === 0x0D;
-      // C1 arrives as UTF-8 (0xC2 0x80–0x9F), so the lead byte is what to spot.
+      // C1 arrives as UTF-8 (0xC2 followed by 0x80..0x9F), so the lead byte is
+      // what to spot.
       const isC1 = b === 0xC2 && bytes[i + 1] >= 0x80 && bytes[i + 1] <= 0x9F;
-      if ((b < 0x20 && !isLayout) || b === 0x7F || isC1) {
+      // Bidi overrides and isolates are FORMAT characters, not control ones, so
+      // no `b < 0x20` test sees them — which is how four literal ones reached
+      // `lib.mjs` while the regex that escapes them was being written, found by
+      // a hand-run scan rather than by this suite. The set is exactly the one
+      // `FIELD_UNSAFE` escapes on output: U+202A..U+202E is E2 80 AA..AE, and
+      // U+2066..U+2069 is E2 81 A6..A9.
+      const isBidi = b === 0xE2
+        && ((bytes[i + 1] === 0x80 && bytes[i + 2] >= 0xAA && bytes[i + 2] <= 0xAE)
+          || (bytes[i + 1] === 0x81 && bytes[i + 2] >= 0xA6 && bytes[i + 2] <= 0xA9));
+      if ((b < 0x20 && !isLayout) || b === 0x7F || isC1 || isBidi) {
         const line = bytes.subarray(0, i).toString('utf8').split('\n').length;
-        bad.push(`0x${b.toString(16).padStart(2, '0')} at line ${line}`);
+        const cp = isBidi
+          ? 0x2000 | ((bytes[i + 1] & 0x3F) << 6) | (bytes[i + 2] & 0x3F)
+          : null;
+        const what = cp === null
+          ? `0x${b.toString(16).padStart(2, '0')}`
+          : `U+${cp.toString(16).toUpperCase().padStart(4, '0')}`;
+        bad.push(`${what} at line ${line}`);
       }
     }
-    check(`${file.split('/').pop()} carries no literal control byte`,
+    check(`${relFromRoot(file)} carries no literal control or bidi character`,
       bad.length === 0, bad.slice(0, 5).join(', '));
   }
+}
+
+/** Repo-relative path for a check label, so 15 of them stay readable. */
+function relFromRoot(file) {
+  const root = join(SCRIPTS, '..');
+  return file.startsWith(root) ? file.slice(root.length).replace(/^[/\\]/, '') : file;
 }
 
 // ---------------------------------------------- 6. the two counts that had no test
