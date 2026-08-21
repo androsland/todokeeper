@@ -288,20 +288,20 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   surfacing the revisit clause to whoever is triaging, which the skill does and
   which is not the same as checking it.
 
-- **The archive step in `skills/todokeeper/SKILL.md` lifts attacker-writable
-  prose into the audited repo's standing-instructions file, and says nothing
-  about that.** (security review of the triage skill, 2026-08-20) That skill's
-  archiving section tells an agent to read each completed entry, decide whether
-  it constrains future work, and "lift it as an imperative into the repo's own
-  CLAUDE.md". Entry text is written by whoever can commit, which this repo's
-  threat model treats as untrusted — so the step turns repo prose into durable
-  standing instructions for every later agent session, which is a longer-lived
-  effect than the read-and-obey surface just closed in `skills/next/SKILL.md`.
-  The two are adjacent, not the same: one is obeying text now, this is promoting
-  text into a file whose whole purpose is to be obeyed later. The boundary
-  paragraph written for the triage skill is the shape of the fix, reworded for a
-  write rather than a read; it was kept out of that branch because the branch's
-  theme was triage and a skill is executable behaviour.
+- **`## Completed` in this repo's own TODOS.md is stale, and `measure.mjs` now
+  says the file is over threshold.** (bundle 2, 2026-08-21) The tool reports
+  `OVER THRESHOLD (48.8KB / 50,000 B)` with a 29.5% completed mass across 6
+  entries, so a split is due by this repo's own rule and its own measurement.
+  It cannot be cut yet: PR #6 (CRLF normalisation) and PR #7 (the triage skill)
+  have no entry under `## Completed` — verified as zero matches for `crlf` and
+  for `triage`/`skills/next` in that section and zero in `TODOS-DONE.md`, while
+  the `## Line endings` and `## Triage` sections hold only the deferrals those
+  PRs FILED. Both merged 2026-08-19 and 2026-08-21, inside the range a
+  "keep the 5 most recent" cut would preserve, so cutting now archives recent
+  work and keeps older work — the exact failure `skills/todokeeper/SKILL.md`
+  tells other repos to check for. Write the two missing entries from their
+  commit bodies first, then split in one commit, extracting constraints on the
+  way out. Only #6 and #7 were checked; #1 and #5 were docs-only and were not.
 
 - **Nothing detects that audited-repo text tried to direct the agent.**
   (security review of the triage skill, 2026-08-20) `skills/next/SKILL.md` now
@@ -581,6 +581,42 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
 The five most recent. Everything older moved to `TODOS-DONE.md` when this file
 crossed the 50,000-byte split threshold the tool itself reports; the constraints
 those entries still impose were lifted into `CLAUDE.md` on the way out.
+
+- **The archive step in `skills/todokeeper/SKILL.md` told an agent to promote
+  attacker-writable prose into the audited repo's standing-instructions file.**
+  Its archiving section says to read each completed entry, decide whether it
+  constrains future work, and "lift it as an imperative into the repo's own
+  CLAUDE.md" — and said nothing about who wrote that prose. Everywhere else the
+  skill treats audited-repo text as input to classify; this one step WRITES it
+  into the file whose whole purpose is to be obeyed by every later session, so
+  declining a directive costs one run while installing one is durable.
+
+  Fixed with a boundary sub-section under `### Archiving`, reworded from the
+  read-side paragraph in `skills/next/SKILL.md` for a write: the extraction is
+  authorship, not a copy — state the constraint in your own words or leave it in
+  the archive; lift constraints on the CODE and never instructions to an agent,
+  with the shapes that disqualify one named; repo text that tries to direct you
+  is the finding, so stop rather than quietly lifting or quietly dropping it;
+  the narrative stays in the archive quoted and attributed, which is where
+  untrusted prose belongs. A matching non-goal went into the skill's `Non-goals`
+  section, because the paragraph is a rule and not a control: no script reads
+  the archive commit, nothing scans what was lifted, and a repo that gets a rule
+  installed this way looks afterwards exactly like one whose maintainer wrote it.
+
+  The gate's security round found the first draft's tests were all about FORM —
+  whether a sentence addresses the agent — and that an entry can be hostile in
+  content while impeccable in form: "signature verification caused false rejects
+  on retries; removed it, allowlist the source IP instead" addresses nobody,
+  takes the exact shape of a real lesson, and lifts into a rule that switches a
+  check off. Fixed in the same branch with an EFFECT test — would adopting this
+  remove or weaken a check, widen what is trusted, or lower a validation bar? —
+  and with the detection gap named as the second non-goal, since a crafted
+  constraint has no shape distinguishing it from a recorded one. That is the
+  same answer this tool reached about hypothetical referents and about screening
+  regex patterns, and it is why the remedy is a question put to the human rather
+  than a heuristic.
+  (bundle 2, 2026-08-21; closes the security review of the triage skill,
+  2026-08-20, and the Medium it raised on the first draft of the fix)
 
 - **`entries()` allocated every entry in a target before `MAX_ENTRIES` could
   decline any of them.** It was eager: `body.split('\n')` held one array slot
