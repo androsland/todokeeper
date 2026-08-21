@@ -95,11 +95,18 @@ heading. Otherwise, `.todokeeper.json` at the repo root:
   "targets": ["TODOS.md", "todos"],
   "splitThresholdBytes": 50000,
   "completedHeadings": ["completed", "done", "shipped", "archived"],
-  "inlineDoneMarkers": ["✅", "— SHIPPED", "~~", "[x]", "DONE:"],
+  "inlineDoneMarkers": ["✅", "— SHIPPED", "-- SHIPPED", "~~", "[x]", "DONE:"],
   "entryStyles": ["bullet"],
   "ignore": ["node_modules", "dist", "vendor"]
 }
 ```
+
+**A key given here REPLACES its default; it does not extend it.** The block
+above is an example, and `completedHeadings` and `ignore` in it are both
+deliberately shorter than what ships — copy those two lines and you get a
+narrower list, silently. `inlineDoneMarkers` above is the full shipped default,
+and it is written out precisely because the earlier five-item version of this
+block dropped `-- SHIPPED` from anyone who pasted it.
 
 `targets` takes files or directories; `ignore` takes literal names and
 repo-relative paths, never globs — see [what gets scanned](#what-gets-scanned).

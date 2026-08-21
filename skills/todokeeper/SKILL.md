@@ -44,14 +44,18 @@ repo root:
   "targets": ["TODOS.md", "todos"],
   "splitThresholdBytes": 50000,
   "completedHeadings": ["completed", "done", "shipped", "archived"],
-  "inlineDoneMarkers": ["✅", "— SHIPPED", "~~", "[x]", "DONE:"],
+  "inlineDoneMarkers": ["✅", "— SHIPPED", "-- SHIPPED", "~~", "[x]", "DONE:"],
   "entryStyles": ["bullet"],
   "ignore": ["node_modules", "dist", "vendor"]
 }
 ```
 
-`targets` accepts files or directories. Every key is optional and overrides one
-default; an unknown key is an error, not a silent no-op, and so is a wrongly
+`targets` accepts files or directories. Every key is optional and REPLACES its
+default rather than extending it — `completedHeadings` and `ignore` above are
+abridged for the example, so pasting either line narrows what ships.
+`inlineDoneMarkers` above is the full default, spelled out because the earlier
+five-item version of this block dropped `-- SHIPPED` from anyone who copied it.
+An unknown key is an error, not a silent no-op, and so is a wrongly
 typed value. `completedHeadings` and `inlineDoneMarkers` take at most 100
 entries of at most 64 characters — they hold words, and an unbounded word list
 is a real cost, not a stylistic one.
