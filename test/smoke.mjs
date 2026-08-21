@@ -916,7 +916,191 @@ function testWalkFallback() {
   }
 }
 
-// ------------------------------ 10. an ignore entry that cannot match is an error
+// ------------------------- 10. the per-entry done count, and what it refuses to see
+
+/**
+ * `entriesMarkedDone` answers "how many of my OPEN ENTRIES are actually
+ * closed?"; `inlineDoneMarkers` answers "how much completion language does this
+ * file contain?". They are different numbers, they never converge, and the bug
+ * this phase pins is reporting only the second while a reader takes it for the
+ * first — measured on one real repo as 32 against 0.
+ *
+ * Both NON-GOALS are asserted here rather than only written down, because a
+ * limit nothing tests is a limit that quietly stops holding:
+ *  - a struck or marked SUB-BULLET must not close its parent, and the check is
+ *    proven non-vacuous by moving the same line to column 0, where it must;
+ *  - a lead with no marker stays open even when its BODY says DONE, which is
+ *    the shape no first-line scan can ever see.
+ */
+function testLeadMarkedDone() {
+  const roots = [];
+  const build = (todos, config) => {
+    const root = mkdtempSync(join(tmpdir(), 'todokeeper-lead-'));
+    roots.push(root);
+    writeFileSync(join(root, 'TODOS.md'), `${todos.join('\n')}\n`);
+    if (config) writeFileSync(join(root, '.todokeeper.json'), `${JSON.stringify(config, null, 2)}\n`);
+    return root;
+  };
+  const measure = (root, flags = []) => execFileSync(
+    'node', [join(SCRIPTS, 'measure.mjs'), '--root', root, ...flags],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+
+  try {
+    // ---- A. every shape at once, with the numbers pinned exactly.
+    const mixed = build([
+      '# TODOS',
+      '',
+      '## Open',
+      '',
+      '- **A lead marked done — SHIPPED** in the same run.',
+      '  Continuation prose, carrying no marker.',
+      '- **A live parent whose child is finished.**',
+      '  - ~~a struck sub-bullet~~',
+      '  More prose under the same parent.',
+      '- **A live entry closed in its body.**',
+      '  **DONE:** finished in fact, but the lead line does not say so.',
+      '- **A live entry that merely quotes a marker.**',
+      '  Prose mentioning DONE: as a word rather than as a verdict.',
+      '',
+      '## Completed',
+      '',
+      '- **An archived entry — SHIPPED** last week.',
+      '',
+    ]);
+    const a = JSON.parse(measure(mixed, ['--json'])).files[0];
+
+    check('four bullets under a live heading are four entries',
+      a && a.liveEntries === 4, `got ${a && a.liveEntries}`);
+    check('exactly the one entry marked on its LEAD line is counted',
+      a && a.entriesMarkedDone === 1, `got ${a && a.entriesMarkedDone}`);
+    check('a struck SUB-bullet does not close its parent',
+      a && a.entriesMarkedDone === 1,
+      'a completed child is not a completed entry; `isEntryStart` already refuses indent > 1');
+    check('a lead with no marker stays open even when its BODY says DONE',
+      a && a.entriesMarkedDone === 1,
+      'the structural non-goal: no first-line scan can see a body-only closure');
+    check('a marked lead under `## Completed` is not counted as live',
+      a && a.liveEntries === 4 && a.completedEntries === 1,
+      `live ${a && a.liveEntries}, completed ${a && a.completedEntries}`);
+    // The occurrence count is the OTHER question and must be untouched by all
+    // of the above: 1 `— SHIPPED`, 2 `~~`, 2 `DONE:` across the live sections.
+    check('the occurrence count still counts every marker in the body',
+      a && a.inlineDoneMarkers === 5, `got ${a && a.inlineDoneMarkers}`);
+    check('the two numbers diverge, which is the whole point',
+      a && a.inlineDoneMarkers > a.entriesMarkedDone,
+      'if these ever agree on this fixture, one of them stopped measuring what it claims');
+
+    // ---- A'. the negative control's negative control. The SAME struck text at
+    // column 0 is an entry lead and MUST be counted, or the check above passes
+    // for the wrong reason.
+    const promoted = build([
+      '# TODOS',
+      '',
+      '## Open',
+      '',
+      '- **A live parent whose child is finished.**',
+      '- ~~a struck sub-bullet~~',
+      '',
+    ]);
+    const p = JSON.parse(measure(promoted, ['--json'])).files[0];
+    check('the same struck line at column 0 IS counted',
+      p && p.liveEntries === 2 && p.entriesMarkedDone === 1,
+      `live ${p && p.liveEntries}, marked ${p && p.entriesMarkedDone} — indent is the only difference`);
+
+    // ---- B. the legitimate configuration this must NOT fire on: a real
+    // `## Completed` heading and no in-place marking anywhere.
+    const tidy = build([
+      '# TODOS',
+      '',
+      '## Open',
+      '',
+      '- **A live entry.** Nothing here is marked.',
+      '- **Another live entry.** Also unmarked.',
+      '',
+      '## Completed',
+      '',
+      '- **An archived entry.** Finished, and filed under the heading.',
+      '',
+    ]);
+    const b = JSON.parse(measure(tidy, ['--json'])).files[0];
+    check('a repo that archives under a heading reports 0 marked leads',
+      b && b.liveEntries === 2 && b.entriesMarkedDone === 0,
+      `live ${b && b.liveEntries}, marked ${b && b.entriesMarkedDone}`);
+    check('...with the archive still found by heading, so 0 is not a parse failure',
+      b && b.completedEntries === 1 && b.completedBytes > 0,
+      `completed ${b && b.completedEntries} entries, ${b && b.completedBytes} B`);
+
+    const text = measure(tidy);
+    // A number printed only when non-zero cannot say zero: its ABSENCE reads as
+    // "not measured", which is the reading this whole field exists to prevent.
+    check('the report prints the 0 rather than omitting the line',
+      text.includes('0 of 2 live entries marked done on their LEAD line'),
+      text.split('\n').slice(0, 12).join('\n'));
+    check('...and says in words that 0 is an answer, not a defect',
+      text.includes('not a parse failure') && text.includes('not a defect'),
+      'an unstated limit reads as a claim of coverage');
+
+    // ---- C. the two vocabularies are allowed to differ, and setting one must
+    // not move the other. Without this key the only way to teach the per-entry
+    // count a new word is to widen `inlineDoneMarkers`, which degrades it.
+    const split = build([
+      '# TODOS',
+      '',
+      '## Open',
+      '',
+      '- **First lead. RESOLVED — last week.**',
+      '- **Second lead — SHIPPED.**',
+      '- **Third lead. RESOLVED — also.**',
+      '',
+    ], { leadDoneMarkers: ['RESOLVED —'] });
+    const c = JSON.parse(measure(split, ['--json'])).files[0];
+    check('`leadDoneMarkers` replaces the lead vocabulary',
+      c && c.entriesMarkedDone === 2, `got ${c && c.entriesMarkedDone} of ${c && c.liveEntries}`);
+    check('...and leaves the occurrence count on `inlineDoneMarkers`',
+      c && c.inlineDoneMarkers === 1, `got ${c && c.inlineDoneMarkers}`);
+
+    // ---- D. the new key is bounded like the list it stands in for.
+    const badRoot = mkdtempSync(join(tmpdir(), 'todokeeper-lead-cfg-'));
+    roots.push(badRoot);
+    writeFileSync(join(badRoot, 'TODOS.md'), '# TODOS\n');
+    const rejects = (label, value, wanted) => {
+      writeFileSync(join(badRoot, '.todokeeper.json'),
+        `${JSON.stringify({ leadDoneMarkers: value }, null, 2)}\n`);
+      let message = null;
+      try {
+        loadConfig(badRoot);
+      } catch (err) {
+        message = err.message;
+      }
+      check(`leadDoneMarkers rejects ${label}`, message !== null, 'it was accepted');
+      if (message) {
+        check(`...naming the key for ${label}`,
+          message.includes('leadDoneMarkers') && message.includes(wanted),
+          `got ${JSON.stringify(message)}`);
+      }
+    };
+    rejects('an empty marker', [''], 'empty');
+    rejects('a bare string', 'RESOLVED', 'array of strings');
+
+    // Positive control: `null` is the default and must stay legal, or the
+    // validator above rejects the shipped configuration.
+    writeFileSync(join(badRoot, '.todokeeper.json'),
+      `${JSON.stringify({ leadDoneMarkers: null }, null, 2)}\n`);
+    let nullOk = true;
+    try {
+      loadConfig(badRoot);
+    } catch {
+      nullOk = false;
+    }
+    check('leadDoneMarkers accepts null, which means "reuse inlineDoneMarkers"', nullOk,
+      'null is the shipped default — rejecting it would reject DEFAULTS itself');
+  } finally {
+    for (const r of roots) rmSync(r, { recursive: true, force: true });
+  }
+}
+
+// ------------------------------ 11. an ignore entry that cannot match is an error
 
 /**
  * Each rejected shape used to be accepted and match nothing, at any depth, with
@@ -990,6 +1174,7 @@ try {
     ['piped-json', testPipedJson],
     ['git-enumeration', testGitEnumeration],
     ['walk-fallback', testWalkFallback],
+    ['lead-marked-done', testLeadMarkedDone],
     ['ignore-validation', testIgnoreValidation],
   ]) {
     try {

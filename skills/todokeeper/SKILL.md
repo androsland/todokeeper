@@ -45,6 +45,7 @@ repo root:
   "splitThresholdBytes": 50000,
   "completedHeadings": ["completed", "done", "shipped", "archived"],
   "inlineDoneMarkers": ["✅", "— SHIPPED", "-- SHIPPED", "~~", "[x]", "DONE:"],
+  "leadDoneMarkers": null,
   "entryStyles": ["bullet"],
   "ignore": ["node_modules", "dist", "vendor"]
 }
@@ -59,6 +60,16 @@ An unknown key is an error, not a silent no-op, and so is a wrongly
 typed value. `completedHeadings` and `inlineDoneMarkers` take at most 100
 entries of at most 64 characters — they hold words, and an unbounded word list
 is a real cost, not a stylistic one.
+
+`leadDoneMarkers` is the vocabulary for the **per-entry** count only. `null`,
+the default, means *the same words as `inlineDoneMarkers`*, which is right for
+nearly every repo. Reach for it only when the two must differ — `DONE:` counted
+anywhere in a checklist but only `**SHIPPED` counted at an entry's lead, or a
+lead word the occurrence count should not learn. Do NOT teach a lead word by
+widening `inlineDoneMarkers`: measured on one repo, adding `**CLOSED`,
+`**ANSWERED`, `**FIXED` and `**DONE` there took the occurrence count from 32 to
+46 with all 14 new hits prose. It replaces rather than adds, `[]` means never
+fire, and it carries the same bounds as a list.
 
 **No key takes a regex** — `.todokeeper.json` ships inside the repo being
 scanned, and a regex from an untrusted file can burn the whole run inside V8
@@ -123,10 +134,30 @@ almost nothing from an archive split; a large file that is mostly archive gains
 the whole win. They are different questions and the second is the one people
 guess at.
 
-`inline done N marker(s) OUTSIDE any completed section` means completions are
-recorded in place rather than moved. When that count is high, the completed-mass
-percentage understates the archive and the file's real problem is that finished
-work is interleaved with pending work — a different repair than splitting.
+In-place completions are reported as **two** figures, and reading the wrong one
+is the mistake this pair exists to stop:
+
+```
+  entries marked  0 of 110 live entries marked done on their LEAD line
+  inline done     32 marker(s) OUTSIDE any completed section
+```
+
+`entries marked N of M` is the answer to *how many of my open entries are
+actually closed?* — one verdict per entry, read off its first line. When it is
+high, the completed-mass percentage understates the archive and the file's real
+problem is finished work interleaved with pending work, which is a different
+repair than splitting.
+
+`inline done N` is the answer to *how much completion language does this file
+contain at all?* — marker OCCURRENCES anywhere in a section body. It is
+routinely much larger and is **not** a count of finished entries. Those two
+numbers are one real repo: all 32 occurrences there are prose, continuation
+lines and struck sub-bullets, and not one open entry was closed. Quote
+`entries marked` when someone asks how much of the open list is done.
+
+**`entries marked 0` means nothing is marked in place — it is not a defect and
+not a parse failure.** A repo that archives under a `## Completed` heading
+should read 0 there, and the report says so in words.
 
 ### stale — the code moved, the note did not
 
@@ -208,6 +239,17 @@ is wrong".
 **It does not expire anything.** A stale-but-open entry and a deliberately
 long-lived one look identical to every check here. Nothing distinguishes them and
 nothing should — that is a reading judgement.
+
+**The per-entry done count reads first lines and nothing else.** It cannot see
+an entry closed by editing its BODY while the lead stays as written, and it does
+not fire on a struck or marked SUB-bullet, because a completed child does not
+close its parent. Both fall out of one rule — an entry's lead is line 0, and an
+entry never starts on a line indented past one space — rather than being two
+separate special cases. A lead that merely QUOTES a marker does count: measured
+across 316 live entries in 14 deferred-work files in 9 unrelated repos none do —
+the only two leads that fire are genuine in-place completions — but the error
+would be in the direction that hides work, so treat the figure as advisory. It
+never moves an entry out of `live entries`.
 
 **It does not fire below the threshold, and that is correct.** A 9KB deferred-work
 file with a 30% archive is a healthy file. Do not split it.

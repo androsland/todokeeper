@@ -48,6 +48,24 @@ export const DEFAULTS = {
   // reads as near-zero on a repo that never adopted a Completed section.
   inlineDoneMarkers: ['✅', '— SHIPPED', '-- SHIPPED', '~~', '[x]', 'DONE:'],
 
+  // The vocabulary for the PER-ENTRY count, which answers a different question
+  // from `inlineDoneMarkers` — see `isLeadMarkedDone`. `null` means "the same
+  // words", and that is the default because the two lists agreeing is the
+  // common case: measured across 205 archived entries in two files of one repo,
+  // the shipped words plus that repo's own two additions caught 92 of them at
+  // lead position.
+  //
+  // The key exists so that improving one count cannot be paid for by degrading
+  // the other. Measured on the same repo: adding `**CLOSED`, `**ANSWERED`,
+  // `**FIXED` and `**DONE` to `inlineDoneMarkers` — the obvious way to teach the
+  // per-entry count a new word without this key — took the OCCURRENCE count
+  // from 32 to 46 where all 14 new hits were prose, eleven of them inside the
+  // two entries describing the gap. A repo needing a wider lead vocabulary sets
+  // this instead and leaves the occurrence count alone; a repo needing a
+  // NARROWER one (`DONE:` counted anywhere in a checklist, only `**SHIPPED`
+  // counted at a lead) sets it too. `[]` is legal and means never fire.
+  leadDoneMarkers: null,
+
   // How an entry starts, as a closed set of names rather than a pattern — see
   // `ENTRY_STYLES`. A leading blockquote marker is stripped before the style is
   // applied in every case, because quoting an archived entry rather than
@@ -576,6 +594,9 @@ export function isEntryStart(line, styles) {
  * proportion to what the author wrote and multiplies against nothing.
  * `inlineDoneMarkers` is bounded here for symmetry, not for a measured need —
  * it reaches `String.prototype.split`, which stayed under 2s even at 40MB.
+ * `leadDoneMarkers` gets the same bounds when it is set, on the same reasoning:
+ * it multiplies against ENTRY COUNT rather than section bytes, so it is the
+ * cheaper of the two, and being cheaper than a bounded thing is not a bound.
  */
 const MAX_LIST_ITEMS = 100;
 const MAX_LIST_ITEM_CHARS = 64;
@@ -685,6 +706,12 @@ export function loadConfig(root) {
   }
   checkWordList('completedHeadings', config.completedHeadings);
   checkWordList('inlineDoneMarkers', config.inlineDoneMarkers);
+  // `null` is the default and means "reuse `inlineDoneMarkers`", so it is the
+  // one non-array this key accepts. Every other shape goes through the same
+  // bounds as the list it stands in for — it is matched per entry rather than
+  // per section body, which is strictly less work than `inlineDoneMarkers`
+  // already does, but "cheaper than the thing beside it" is not a bound.
+  if (config.leadDoneMarkers !== null) checkWordList('leadDoneMarkers', config.leadDoneMarkers);
   // Unvalidated, this reached a numeric comparison and simply made `crossed`
   // always false — a config typo that silently reports every file as under the
   // threshold, which is the one answer nobody re-checks.
@@ -927,6 +954,70 @@ export function entries(body, entryStyles) {
       text, lead: leadPhrase(text), needle: searchNeedle(text), referents: referentsIn(text),
     };
   });
+}
+
+/** The words the per-entry count uses: `leadDoneMarkers` if set, else the same list. */
+export function leadMarkersFor(config) {
+  return config.leadDoneMarkers ?? config.inlineDoneMarkers;
+}
+
+/**
+ * Is THIS ENTRY marked done, on its own lead line?
+ *
+ * This is not the same measurement as counting marker occurrences in a section
+ * body, and the two never converge. Measured on one repo, 2 target files, 110
+ * live entries: the occurrence count reports 32 and this reports 0, and all 32
+ * are prose — a `**CLOSED <date>` on a CONTINUATION line inside a live entry, a
+ * struck SUB-bullet under a live parent, and sentences quoting the marker
+ * strings. A maintainer reading 32 as "32 of my open entries are finished" has
+ * been answered a question they did not ask. Both numbers ship, because
+ * "how much completion language does this file contain" is also real.
+ *
+ * POSITION IS THE WHOLE RULE, and it is the lead LINE, not the lead's start.
+ * A start-anchored test was measured and rejected: against 114 archived entries
+ * in one file it scored 17 where this scores 27, and the 10 it misses are one
+ * repo's ordinary convention — `- **#80 — bolder job-type tints — SHIPPED`,
+ * `- **[P2] #78 — Πελάτες registry A→Z — MERGED`. Three of the six shipped
+ * default markers (`— SHIPPED`, `-- SHIPPED`, `✅`) are written as headline
+ * SUFFIXES, so anchoring at the start would make half the default list dead
+ * letter at the one position this function looks at.
+ *
+ * The sub-bullet exclusion is not a second rule and deliberately not a new one:
+ * a lead line is by construction line 0 of an entry, `isEntryStart` already
+ * refuses any line indented past one space, and `entries()` starts an entry
+ * only on a line that passes it. So a struck child under a live parent is never
+ * examined, because it is never a lead. A completed child does not close its
+ * parent, and that falls out of the existing rule rather than being bolted on.
+ *
+ * Non-goals, stated here because an unstated limit reads as coverage:
+ *  - It CANNOT see an entry closed by editing its BODY and leaving the lead
+ *    alone. No scan of first lines can, and widening to the body is the
+ *    occurrence count that already exists.
+ *  - Prose on a lead line that QUOTES a marker fires. Measured across 316 live
+ *    entries in 14 deferred-work files in 9 unrelated repos, zero do — the only
+ *    two leads that fire are genuine in-place completions — but `- **Should we
+ *    adopt ~~this~~?` would, and a live `- **HALF FIXED — ...` would too if
+ *    `**FIXED` were ever added. The error is in the direction that hides work.
+ *  - ZERO IS A NUMBER, not a defect. A repo with a real `## Completed` heading
+ *    and no in-place marking reports 0 correctly, and every caller must print
+ *    it rather than suppressing it.
+ *
+ * `entryText` is `entries()`'s `.text`, whose first line is the entry's opening
+ * line because `text` is that entry's lines rejoined in order. Sliced at the
+ * first newline rather than split, so a single-line entry of any size costs one
+ * scan and no array.
+ */
+export function isLeadMarkedDone(entryText, markers) {
+  if (typeof entryText !== 'string') return false;
+  const nl = entryText.indexOf('\n');
+  const lead = nl === -1 ? entryText : entryText.slice(0, nl);
+  for (const marker of markers) {
+    // An empty marker is rejected at config load; this is the same guard one
+    // level down, because `''.includes` is true for every string and would
+    // report every entry in the file as done.
+    if (marker && lead.includes(marker)) return true;
+  }
+  return false;
 }
 
 /**

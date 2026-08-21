@@ -15,6 +15,19 @@
  * adopted a Completed section reads as 0% on the first count and its real
  * archive shows up only in the second.
  *
+ * The inline half is then reported TWO WAYS, because it is two questions:
+ *
+ *   entries marked  how many LIVE ENTRIES are marked done on their lead line
+ *   inline done     how many marker OCCURRENCES the live sections contain
+ *
+ * They are different numbers and they never converge. Measured on one repo with
+ * 110 live entries, the second reads 32 and the first reads 0 — every one of
+ * the 32 is prose, a marker on a continuation line, or a struck SUB-bullet under
+ * a live parent. A maintainer asking "how many of my open entries are actually
+ * closed?" wants the first; a maintainer asking "does this file record
+ * completions in place at all?" wants the second. Reporting only the second and
+ * letting it be read as the first is the bug this pair exists to close.
+ *
  * Usage:
  *   node scripts/measure.mjs [--json] [--root <dir>]
  */
@@ -22,6 +35,7 @@
 import {
   loadConfigOrExit, repoRoot, resolveTargets, sections, entries, rel, isCompletedHeading,
   readTargetMeta, warnIfHeadingless, safeField, jsonSafe, writeStdout,
+  isLeadMarkedDone, leadMarkersFor,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -75,7 +89,9 @@ for (const abs of targets) {
   let completedEntries = 0;
   let liveEntries = 0;
   let inlineDone = 0;
+  let markedLeads = 0;
   const inventory = [];
+  const leadMarkers = leadMarkersFor(config);
 
   // A completed heading owns everything under it until a heading at the same or
   // shallower depth. Without that, a `### Archived` nested under `## Completed`
@@ -94,6 +110,9 @@ for (const abs of targets) {
       (n, m) => n + sec.body.split(m).length - 1,
       0,
     );
+    // Counted over the SAME entry objects `found` already holds, so the two
+    // numbers below cannot drift apart by disagreeing about what an entry is.
+    const marked = found.filter((e) => isLeadMarkedDone(e.text, leadMarkers)).length;
 
     if (inCompleted) {
       completedBytes += sec.bytes;
@@ -101,6 +120,11 @@ for (const abs of targets) {
     } else {
       liveEntries += found.length;
       inlineDone += marks;
+      // Live sections only, and for the same reason `inlineDone` is: an entry
+      // under `## Completed` is already counted as finished by the heading, so
+      // counting its `[x]` again would double-count the archive rather than
+      // measure what this figure is for — completions recorded WITHOUT one.
+      markedLeads += marked;
     }
 
     inventory.push({
@@ -110,6 +134,7 @@ for (const abs of targets) {
       entries: found.length,
       completed: inCompleted,
       inlineDoneMarkers: inCompleted ? 0 : marks,
+      entriesMarkedDone: inCompleted ? 0 : marked,
     });
   }
 
@@ -123,6 +148,11 @@ for (const abs of targets) {
     completedEntries,
     liveEntries,
     inlineDoneMarkers: inlineDone,
+    // A count of live ENTRIES, so it is bounded by `liveEntries` and reads as a
+    // fraction of it. `inlineDoneMarkers` beside it is a count of OCCURRENCES
+    // and is bounded by nothing in particular — it can and does exceed the
+    // entry count. Naming them apart in the JSON is the point.
+    entriesMarkedDone: markedLeads,
     sections: inventory,
   });
 }
@@ -131,6 +161,8 @@ const totalBytes = files.reduce((n, f) => n + f.bytes, 0);
 const totalDiskBytes = files.reduce((n, f) => n + f.diskBytes, 0);
 const totalCompleted = files.reduce((n, f) => n + f.completedBytes, 0);
 const totalInline = files.reduce((n, f) => n + f.inlineDoneMarkers, 0);
+const totalLive = files.reduce((n, f) => n + f.liveEntries, 0);
+const totalMarked = files.reduce((n, f) => n + f.entriesMarkedDone, 0);
 const over = files.filter((f) => f.diskBytes >= config.splitThresholdBytes);
 
 const verdict = {
@@ -145,6 +177,12 @@ const verdict = {
   completedBytes: totalCompleted,
   completedPercent: totalBytes === 0 ? 0 : Number(((totalCompleted / totalBytes) * 100).toFixed(1)),
   inlineDoneMarkers: totalInline,
+  // The denominator ships with the numerator. `entriesMarkedDone` alone is
+  // unreadable — 4 is a lot out of 6 and nothing out of 400 — and a consumer
+  // that had to re-derive the total by summing `files[].liveEntries` would get
+  // a different answer the moment a target is skipped for size.
+  liveEntries: totalLive,
+  entriesMarkedDone: totalMarked,
   // Deliberately not a recommendation. Crossing the threshold is a fact; what
   // to do about it depends on whether the mass is archive or live work, and
   // that is a judgement this script refuses to make.
@@ -179,9 +217,25 @@ for (const f of files) {
   }
   console.log(`  completed mass  ${kb(f.completedBytes)} (${f.completedBytes.toLocaleString()} B, ${f.completedPercent}% of file, ${f.completedEntries} entries)`);
   console.log(`  live entries    ${f.liveEntries}`);
+  // Printed ALWAYS, 0 included. A figure that appears only when it is non-zero
+  // cannot say zero: its absence reads as "not measured", and 0 here is a real,
+  // common and correct answer — a repo with a working `## Completed` heading and
+  // no in-place marking should read 0 and be told that 0 is fine.
+  console.log(`  entries marked  ${f.entriesMarkedDone} of ${f.liveEntries} live entries marked done on their LEAD line`);
+  if (f.entriesMarkedDone > 0) {
+    console.log('                  -> completions recorded in place, so the percentage above understates the archive.');
+  } else {
+    console.log('                  -> 0 means nothing is recorded as finished in place. That is not a parse failure,');
+    console.log('                     and not a defect on a repo that archives under a heading instead.');
+  }
   if (f.inlineDoneMarkers > 0) {
     console.log(`  inline done     ${f.inlineDoneMarkers} marker(s) OUTSIDE any completed section`);
-    console.log(`                  -> completions recorded in place. The percentage above understates the archive.`);
+    // The count above is unchanged; this explains what it is, which is not what
+    // the line above it measures. It used to claim the archive was understated,
+    // and printed beside a `entries marked 0` that claim is simply false —
+    // measured, 32 occurrences against 0 marked entries on one real repo.
+    console.log('                  -> an OCCURRENCE count over whole section bodies, not a count of entries:');
+    console.log('                     prose, continuation lines and struck sub-bullets all count here.');
   }
   const biggest = [...f.sections].sort((a, b) => b.bytes - a.bytes).slice(0, 5);
   console.log('  largest sections:');
@@ -192,7 +246,8 @@ for (const f of files) {
 }
 
 if (files.length > 1) {
-  console.log(`total: ${kb(totalDiskBytes)} across ${files.length} files, ${verdict.completedPercent}% completed mass\n`);
+  console.log(`total: ${kb(totalDiskBytes)} across ${files.length} files, ${verdict.completedPercent}% completed mass`);
+  console.log(`       ${totalMarked} of ${totalLive} live entries marked done on their lead line\n`);
 }
 
 if (verdict.crossed) {
