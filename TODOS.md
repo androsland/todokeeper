@@ -269,6 +269,36 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   split would move, which it already computes.
   (2026-08-19)
 
+- **The suite's own source scanner is quadratic in the longest LINE, and
+  nothing bounds it.** Phase 17's `maskSource` decides regex-versus-division by
+  scanning forward for the closing `/`; an unmatched `[` sets `inClass` with no
+  reset, so the scan runs to end of line, and a line of repeated `=[/`
+  re-triggers a near-full-line scan at almost every position. Measured on
+  `'=[/'.repeat(K)`: 43ms / 123ms / 627ms / 1860ms at 6/12/24/48 KB, quadrupling
+  per doubling. The driver is line length, not file size -- the same 48,000
+  bytes wrapped at 80 columns costs 11.3ms, 165x less, and a 48KB line buried in
+  100KB of ordinary source still costs 1899ms. Not reachable from the audited
+  repo: `maskSource` only ever reads `scripts/*.mjs`, resolved from
+  `import.meta.url` and never from `--root`, so the cost falls on a
+  contributor's own suite run and the longest line in any scanned file today is
+  210 characters. It becomes a real bound the day anything points this scanner
+  at repo-supplied text. (security review, 2026-08-21; mechanism corrected on
+  re-measurement -- the review read the scan as running to EOF, but a newline
+  does break it, which is why wrapping the identical bytes is 165x cheaper)
+
+- **The two phase-17 allowlists have different key shapes, and only one of them
+  goes stale loudly.** `KNOWN_UNESCAPED` is keyed `(file, expr)` and is backed
+  by `unescaped.length === KNOWN_UNESCAPED.length`, so it fails both on a new
+  unescaped site and on one that was fixed without deleting its entry.
+  `REVIEWED_NON_TEXT` is keyed on expression TEXT alone -- `.has(expr)`, no
+  file, no cardinality assert -- so a future variable reusing a classified name
+  in another script silently inherits the verdict written for the original.
+  `key` is the live example: classified as a verdict name from the closed list
+  this tool writes itself, for `dead.mjs:421`, and any later `${key}` anywhere
+  would pass on that reasoning. No such instance exists today. The fix is to key
+  it `(file, expr)` like the other list, mechanical across its 24 entries.
+  (security review, 2026-08-21)
+
 ## Triage
 
 - **The partition in `skills/next/SKILL.md` quotes numbers from this file, and
@@ -351,6 +381,21 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   been designed, and the error understates live work rather than hiding it.
   (2026-08-17)
 
+- **Four values reach a report line without `safeField`, and they are a
+  `scripts/` fix.** Phase 17 found them and lists them in `KNOWN_UNESCAPED`
+  rather than fixing them, because a test PR must not carry an executable
+  change: `${root}` in the first line of all three reports, and
+  `${config._source}` in `measure.mjs`. Neither is reachable from the audited
+  repo's CONTENT, which is why they survived every earlier round of "send
+  everything human-readable through the escaping helpers" — `root` is normally
+  the operator's own argv and `_source` is a fixed filename made relative. The
+  path that is left is a clone directory NAMED from a URL rather than typed:
+  git derives the directory from the URL path, so a percent-escaped CR there
+  lands in the name and then in the report's first line. Low severity; the
+  reason to fix it is that nobody should have to re-derive reachability at each
+  site. Deleting each entry from `KNOWN_UNESCAPED` is part of the fix — the
+  phase fails on a stale list as well as on a grown one. (bundle 7, 2026-08-21)
+
 - **Containment refuses a legitimate setup.** A repo that deliberately symlinks
   `TODOS.md` to a shared file outside its tree is now unmeasurable. That is the
   intended trade — the same symlink is the no-config arbitrary-read vector — but
@@ -393,14 +438,25 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   and would fire on legitimate text. Revisit if a case appears where an
   unescaped format character reached a report.
 
-- **Nothing enforces `safeField` at a print sink that does not exist yet.**
-  Every current single-line `console.log` in the four scripts routes through it —
-  12 sites in `lib.mjs`, 9 in `dead.mjs`, 13 in `stale.mjs`, 5 in `measure.mjs` —
-  but the split between `safe()` (multi-line-tolerant) and `safeField()` (single
-  line, escapes CR/LF/tab/bidi) is a convention held by whoever writes the next
-  line. No lint rule, no test, no wrapper type. The failure mode is silent: a new
-  `${safe(heading)}` in a one-line report reads correctly in review and forges a
-  report line at runtime. (self-review, 2026-08-17)
+- **The escaping scan is a text scan, so a value assembled by a FUNCTION is
+  invisible to it.** Phase 17 classifies every interpolation inside every print
+  sink in `scripts/*.mjs` and follows a bare identifier one level to its local
+  `const`, which is enough for the four the scripts actually use. It stops
+  there: a value built in one function and printed in another passes, and the
+  `const` resolution is by name and nearest-preceding-definition with no scope
+  analysis, so two `const key` in one file resolve to whichever is nearer —
+  which is why an unresolved identifier lands in the reviewed list rather than
+  passing. Closing this properly means parsing rather than scanning, which puts
+  a dependency behind a zero-dependency suite. The backstop is that check 2 has
+  no shape-based escape hatch: an expression nobody has classified fails.
+  (bundle 7, 2026-08-21)
+
+- **`safe()` is now unused, and the phase that keeps it unused will have to be
+  relaxed by hand.** Check 3 fails on any `safe(` inside a print sink, on the
+  ground that this tool prints no multi-line body. `## Triage` below plans to
+  give it one. When that lands, the check has to be narrowed deliberately — to
+  the body sink and nothing else — rather than deleted, and there is nothing in
+  the suite that will remind whoever does it. (bundle 7, 2026-08-21)
 
 - **`stale.mjs` still classifies every referent occurrence, with no memoisation.**
   `dead.mjs` now caches `classifyReferent` on the raw string; `stale.mjs` calls
@@ -456,20 +512,18 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   WRITE from a failed READ and retry differently. A README change, deliberately
   not bundled with the fix that created the third code.
 
-- **`writeStdout` is a convention at two sinks, and nothing enforces it.**
-  Identical shape to the `safeField` entry above. The `--json` sinks in all
-  three scripts now flush before `process.exit`, but every other `console.log`
-  is still async-on-a-pipe and safe only because a text report ends by falling
-  off the end of the module. A future `process.exit()` added after any of them
-  reintroduces the truncation, silently and with exit status 0. No lint rule,
-  no wrapper, no test outside the one `dead.mjs` case. Bundle 4 raised the
-  stakes rather than lowering them: the `'error'` listener `writeStdout` now
-  attaches is process-wide, so a `console.log` running after it loses the
-  native stack trace as well as the flush — swallowed with no diagnostic at
-  all. Safe today only because every call site exits on the next statement,
-  which is the same unenforced ordering this entry is about.
-  (self-review, 2026-08-17; sharpened by the bundle 4 security round,
-  2026-08-21)
+- **The flush check reads source order, which is not control flow.** Phase 17
+  now asserts that every `writeStdout` call is awaited, that a `process.exit(`
+  appears after it before any `console.log(`, and that no `--json` payload goes
+  out through `console.log`. All three are decided by POSITION IN THE FILE. A
+  `console.log` inside a branch that runs before the exit, or in a callback, or
+  in a function called between the two, is ordered correctly on the page and
+  wrongly at runtime. The stakes are the ones bundle 4 raised: the `'error'`
+  listener `writeStdout` attaches is process-wide, so output after it loses the
+  native stack trace as well as the flush. Nothing here distinguishes the two
+  orders, and the runtime check that would — the pipe regression below — covers
+  one script. (self-review, 2026-08-17; narrowed to what stays uncovered,
+  bundle 7, 2026-08-21)
 
 - **The pipe regression check covers `dead.mjs` only.** `stale.mjs` and
   `measure.mjs` carry the same pattern and are not exercised: pushing
@@ -576,11 +630,48 @@ Everything older than these moved to `TODOS-DONE.md` when this file crossed the
 entries still impose were lifted into `CLAUDE.md` on the way out.
 
 This section was cut to the five most recent at that split and has grown back
-to eleven since, so it is **not** "the five most recent" any more and the line
-saying it was has been removed rather than left to read as current. The next
+to thirteen since, so it is **not** "the five most recent" any more and the line
+saying it was has been removed rather than left to read as current. Count it,
+do not increment it: this line said eleven while the file held twelve, because
+each sweep added one to the number it found written down instead of running
+`awk '/^## Completed/{f=1} f' TODOS.md | grep -c '^- \*\*'`. The next
 cut is blocked on a different fact: `## Completed` has no entries for the work
 merged as PRs #6 and #7, and archiving a stale section keeps five older entries
 while archiving the recent ones. Write those two first, then split.
+
+- **Two conventions became checks, and the check found four violations of the
+  first one.** `safeField` at every print sink and `writeStdout` before every
+  exit were both filed as "no lint rule, no test, no wrapper type", both with a
+  failure mode invisible in review. Phase 17 masks each of `scripts/*.mjs` —
+  comments, string bodies and regex bodies blanked to spaces, template literal
+  segments blanked, `${...}` bodies kept, length preserved so an offset still
+  points at the source — then paren-balances every print-sink call over the
+  mask and classifies the 100 interpolations inside them. 4 carry a repo-derived
+  name outside an escaping call, 25 more needed classifying by hand, and the
+  rest are escaper-covered or non-text by shape. The file list is a
+  `readdirSync`, so a fifth script is covered the day it lands. Suite 332 → 362.
+
+  Eleven mutations, all caught, and three of them mattered. Two of the mask's
+  own checks were VACUOUS on the first draft: a stray `)` that closes a sink
+  span early leaves the interpolation before it intact, so asserting on the
+  expression list passed while the scan had silently lost the rest of the
+  statement — both now assert where the call ENDS. And driving the mask only
+  through the corpus cannot fail at all: a mask that stops blanking block
+  comments passes every corpus check and merely scans two extra "sinks" out of
+  the docblock that quotes `console.log(big); process.exit(0)`. The mask needed
+  its own fixtures, one per shape the scripts actually contain — `dead.mjs`
+  pushes the string `'//'`, `lib.mjs` holds a regex with a bracket class,
+  `measure.mjs` nests a template inside an interpolation.
+
+  The allowlists are the enforcement, not an exemption. `REVIEWED_NON_TEXT` is
+  exact-match on the masked expression, so a new one fails until somebody
+  classifies it — there is deliberately no shape that silently passes.
+  `KNOWN_UNESCAPED` is applied AFTER the repo-derived check and only to sites
+  already on it, so it can excuse the four found and nothing else, and it fails
+  on a stale entry as well as a new one. What none of it covers is above, in
+  three entries: a value assembled by a function, source order standing in for
+  control flow, and the four unescaped sites themselves.
+  (bundle 7, 2026-08-21)
 
 - **The suite asserts answers now, not shapes — and the first draft of the
   table proved nothing.** Three gaps closed together: the two parsing rules

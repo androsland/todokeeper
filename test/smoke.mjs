@@ -46,6 +46,15 @@
  *    match the escaping helper rather than to be complete, so a zero-width or a
  *    tag character passes. And nothing runs this suite for you, so it protects
  *    the edits of whoever remembers to run it.
+ *  - The escaping and flush conventions are checked by reading the scripts as
+ *    TEXT, not by parsing them. A value assembled in one function and printed
+ *    in another is invisible; only a bare identifier's own local `const` is
+ *    followed, by name and by nearest definition, with no scope analysis. The
+ *    flush half decides ordering from position in the file, so a `console.log`
+ *    reached through a branch or a callback reads as correctly ordered. What
+ *    the phase does prove is that nothing NEW passes silently: an expression
+ *    nobody has classified fails, and the two allowlists fail on a stale entry
+ *    as well as on a grown one.
  *  - The symlink escapes are covered only where the PLATFORM can create a
  *    symlink. An unprivileged Windows account cannot, and phase 8 then prints
  *    a SKIP and proves nothing about links — read the run's output, not this
@@ -69,7 +78,7 @@
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, lstatSync, statSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, symlinkSync, lstatSync, statSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -2119,6 +2128,513 @@ function testBelowToplevelFallback() {
   }
 }
 
+// --------------------------- 17. the two conventions that nothing enforced
+
+/**
+ * `safeField` at every print sink, and `writeStdout` before every exit.
+ *
+ * TODOS.md carried these as two entries of one shape - "no lint rule, no
+ * test, no wrapper type" - and both fail SILENTLY in review. A
+ * `${safe(heading)}` in a one-line report reads correctly in a diff and forges
+ * a report line at runtime, because `safe()` lets CR and LF through by design.
+ * A `process.exit()` added after a `console.log` truncates a piped report at
+ * one 65,536-byte pipe buffer and exits 0. Neither is visible without reading
+ * the whole call site, and both are the kind of line a hurried change adds.
+ *
+ * So this reads the scripts as TEXT and decides four things:
+ *
+ *  1. No interpolation inside a print sink may carry a repo-derived value
+ *     outside an escaping call. This one cannot be waived: `KNOWN_UNESCAPED`
+ *     below is matched afterwards and never suppresses it.
+ *  2. Every remaining interpolation must be escaper-covered, provably
+ *     non-text by shape, resolvable to a local `const` that is, or listed by
+ *     hand in `REVIEWED_NON_TEXT`. A new one fails until somebody classifies
+ *     it, which IS the enforcement - there is no shape that silently passes.
+ *  3. No print sink may use `safe()` where `safeField()` is meant. The tool
+ *     prints no multi-line body today; when `## Triage` gives it one, this is
+ *     the check that has to be relaxed deliberately rather than eroded.
+ *  4. `writeStdout` is awaited, is the only route for a `--json` payload, and
+ *     is followed by the exit rather than by more output.
+ *
+ * The file list comes from `readdirSync`, so a fifth script is covered the day
+ * it lands rather than the day someone remembers this list.
+ *
+ * WHAT IT CANNOT SEE, written here because an unstated limit reads as coverage:
+ *  - It is a text scan, not a parser. A value assembled by a FUNCTION - built
+ *    in one place, printed in another - is invisible; only a one-level local
+ *    `const` is followed. That resolution is by name and by nearest preceding
+ *    definition, with no scope analysis, so two `const key` in one file
+ *    resolve to whichever is nearer. That is why an unresolvable identifier
+ *    lands in the reviewed list rather than passing.
+ *  - The flush half is stdout-only, matching `writeStdout`. `console.error`
+ *    is scanned for escaping and not for flushing, so the stderr path keeps
+ *    the same shape of exposure at smaller payloads.
+ *  - The repo-derived list is a closed list of NAMES (`raw`, `lead`,
+ *    `subject`, ...). A repo-derived value reaching a sink under a name that
+ *    is not on it is caught only by check 2, as an unreviewed expression -
+ *    which is the backstop, and is why check 2 has no shape-based escape hatch.
+ *  - It proves nothing about the escaping helpers themselves. That
+ *    `safeField` escapes what it claims to is asserted elsewhere; this phase
+ *    only proves it is CALLED.
+ */
+
+/**
+ * A copy of the source with comments, string contents and regex bodies blanked
+ * to spaces, template LITERAL segments blanked, and `${...}` contents kept.
+ *
+ * Byte-for-byte the same length, so an offset into the mask is an offset into
+ * the source. Blanking rather than deleting is the whole trick: it lets a
+ * paren count run over code without a paren inside `'//'` - which `dead.mjs`
+ * really does contain - closing a call that never opened.
+ */
+function maskSource(src) {
+  const out = src.split('');
+  const blank = (a, b) => { for (let k = a; k < b; k += 1) if (out[k] !== '\n') out[k] = ' '; };
+  // A string frame is pushed for a template; `${` pushes a NUMBER, whose value
+  // is the brace depth inside the interpolation. That is what tells an object
+  // literal's brace from the one that closes the interpolation.
+  const stack = [];
+  const prevCode = (p) => {
+    let k = p - 1;
+    while (k >= 0 && /\s/.test(src[k])) k -= 1;
+    return k >= 0 ? src[k] : '\n';
+  };
+  const literalRun = (from) => {
+    let j = from;
+    while (j < src.length) {
+      if (src[j] === '\\') { j += 2; continue; }
+      if (src[j] === '`' || (src[j] === '$' && src[j + 1] === '{')) break;
+      j += 1;
+    }
+    return j;
+  };
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === '/' && src[i + 1] === '/') {
+      const end = src.indexOf('\n', i) === -1 ? src.length : src.indexOf('\n', i);
+      blank(i, end); i = end; continue;
+    }
+    if (c === '/' && src[i + 1] === '*') {
+      const close = src.indexOf('*/', i + 2);
+      const end = close === -1 ? src.length : close + 2;
+      blank(i, end); i = end; continue;
+    }
+    if (c === "'" || c === '"') {
+      let j = i + 1;
+      while (j < src.length && src[j] !== c) { if (src[j] === '\\') j += 1; j += 1; }
+      blank(i + 1, j); i = j + 1; continue;
+    }
+    if (c === '`') {
+      stack.push('template');
+      const j = literalRun(i + 1);
+      blank(i + 1, j); i = j;
+      if (src[i] === '`') { stack.pop(); i += 1; }
+      continue;
+    }
+    if (c === '$' && src[i + 1] === '{' && stack[stack.length - 1] === 'template') {
+      stack.push(0); i += 2; continue;
+    }
+    if (typeof stack[stack.length - 1] === 'number') {
+      if (c === '{') { stack[stack.length - 1] += 1; i += 1; continue; }
+      if (c === '}') {
+        if (stack[stack.length - 1] > 0) { stack[stack.length - 1] -= 1; i += 1; continue; }
+        stack.pop(); i += 1;
+        const j = literalRun(i);
+        blank(i, j); i = j;
+        if (src[i] === '`') { stack.pop(); i += 1; }
+        continue;
+      }
+    }
+    // A `/` after an operator or a delimiter opens a regex; after an
+    // identifier or a `)` it is division. `kb()` divides, `CONTROL_CHARS` does
+    // not, and blanking the wrong one loses a whole call from the scan.
+    if (c === '/' && '=(,:[!&|?{};+*%<>~^\n'.includes(prevCode(i))) {
+      let j = i + 1; let inClass = false;
+      while (j < src.length) {
+        if (src[j] === '\\') { j += 2; continue; }
+        if (src[j] === '[') inClass = true;
+        else if (src[j] === ']') inClass = false;
+        else if (src[j] === '\n') break;
+        else if (src[j] === '/' && !inClass) break;
+        j += 1;
+      }
+      if (src[j] === '/') { blank(i + 1, j); i = j + 1; continue; }
+    }
+    i += 1;
+  }
+  return out.join('');
+}
+
+const PRINT_SINK = /(?:console\.(?:log|error)|writeStdout|process\.(?:stdout|stderr)\.write)\s*\(/g;
+
+/** `[start, end)` of every print-sink call, paren-balanced over the mask. */
+function printSinks(masked) {
+  const spans = [];
+  PRINT_SINK.lastIndex = 0;
+  let hit;
+  while ((hit = PRINT_SINK.exec(masked))) {
+    let i = hit.index + hit[0].length; let depth = 1;
+    while (i < masked.length && depth > 0) {
+      if (masked[i] === '(') depth += 1;
+      else if (masked[i] === ')') depth -= 1;
+      i += 1;
+    }
+    spans.push([hit.index, i]);
+  }
+  return spans;
+}
+
+/** `[start, end)` of each `${...}` body between two offsets. */
+function interpolations(masked, from, to) {
+  const out = [];
+  for (let i = from; i < to - 1; i += 1) {
+    if (masked[i] !== '$' || masked[i + 1] !== '{') continue;
+    let j = i + 2; let depth = 0;
+    while (j < to) {
+      if (masked[j] === '{') depth += 1;
+      else if (masked[j] === '}') { if (depth === 0) break; depth -= 1; }
+      j += 1;
+    }
+    out.push([i + 2, j]);
+    i = j;
+  }
+  return out;
+}
+
+const ESCAPERS = ['safeField', 'jsonSafe', 'notedList'];
+
+/**
+ * Which characters of an expression sit inside an escaping call.
+ *
+ * `.map(safeField)` covers the member chain to its LEFT, because
+ * `config.targets.map(safeField).join(', ')` escapes every element while the
+ * name it reads from is bare.
+ */
+function escaperCoverage(expr) {
+  const covered = new Array(expr.length).fill(false);
+  const mark = (a, b) => { for (let k = a; k < b; k += 1) covered[k] = true; };
+  const call = new RegExp(`\\b(?:${ESCAPERS.join('|')})\\s*\\(`, 'g');
+  let hit;
+  while ((hit = call.exec(expr))) {
+    let i = hit.index + hit[0].length; let depth = 1;
+    while (i < expr.length && depth > 0) {
+      if (expr[i] === '(') depth += 1;
+      else if (expr[i] === ')') depth -= 1;
+      i += 1;
+    }
+    mark(hit.index, i);
+    call.lastIndex = hit.index + hit[0].length;
+  }
+  const mapped = new RegExp(`\\.map\\(\\s*(?:${ESCAPERS.join('|')})\\s*\\)`, 'g');
+  while ((hit = mapped.exec(expr))) {
+    let k = hit.index - 1;
+    while (k >= 0 && /[\w$.\]['"]/.test(expr[k])) k -= 1;
+    mark(k + 1, hit.index + hit[0].length);
+  }
+  return covered;
+}
+
+/**
+ * The names that carry text out of the audited repo.
+ *
+ * Closed on purpose, and short on purpose: it exists to give a SPECIFIC
+ * failure message for the case that matters, not to be the coverage. Check 2
+ * is what makes a value under some other name fail.
+ */
+const REPO_DERIVED = new Set([
+  'raw', 'lead', 'file', 'path', 'text', 'heading', 'subject', 'ignoredBy',
+  'root', '_source', 'name', 'label', 'reason', 'target', 'msg', 'message', 'word',
+]);
+
+function repoDerivedNames(expr) {
+  const covered = escaperCoverage(expr);
+  const found = new Set();
+  const ident = /[A-Za-z_$][\w$]*/g;
+  let hit;
+  while ((hit = ident.exec(expr))) {
+    if (REPO_DERIVED.has(hit[0]) && !covered[hit.index]) found.add(hit[0]);
+  }
+  return [...found];
+}
+
+/** Shapes that carry no text at all. Every one is a whole-expression match. */
+const NON_TEXT_SHAPES = [
+  [/^\d[\d_e.]*$/, 'a number literal'],
+  [/^[A-Z][A-Z0-9_]*$/, 'a module constant'],
+  [/\.(?:length|size)$/, 'a count'],
+  [/\.toLocaleString\(\)$/, 'a formatted number'],
+  [/\.toFixed\(\d*\)$/, 'a formatted number'],
+  [/\?\s*'[^']*'\s*:\s*'[^']*'$/, 'a ternary of two string literals'],
+  [/^'[^']*'\.repeat\(/, 'a literal repeated'],
+  [/^[\w$.]+\s*[-+*/]\s*[\w$.]+$/, 'arithmetic'],
+  [new RegExp(`^(?:${ESCAPERS.join('|')})\\(`), 'an escaping call'],
+  [new RegExp(`\\.map\\(\\s*(?:${ESCAPERS.join('|')})\\s*\\)(?:\\.join\\([^)]*\\))?$`), 'each element escaped'],
+];
+
+function nonTextShape(expr) {
+  const hit = NON_TEXT_SHAPES.find(([re]) => re.test(expr));
+  return hit ? hit[1] : null;
+}
+
+/**
+ * The right-hand side of the nearest `const`/`let` of that name above `before`.
+ *
+ * By name and by position, with no scope analysis - see the non-goals above.
+ * Returns null when there is no definition, which sends the identifier to the
+ * reviewed list rather than passing it.
+ */
+function resolveLocalConst(masked, id, before) {
+  const def = new RegExp(`\\b(?:const|let)\\s+${id}\\s*=`, 'g');
+  let hit; let at = -1;
+  while ((hit = def.exec(masked)) && hit.index < before) at = hit.index + hit[0].length;
+  if (at === -1) return null;
+  let i = at; let depth = 0;
+  while (i < masked.length) {
+    const c = masked[i];
+    if ('([{'.includes(c)) depth += 1;
+    else if (')]}'.includes(c)) depth -= 1;
+    else if (c === ';' && depth === 0) break;
+    i += 1;
+  }
+  return masked.slice(at, i).replace(/\s+/g, ' ').trim();
+}
+
+/** True when a `const` right-hand side carries no text of its own. */
+function resolvesNonText(rhs) {
+  const inner = [];
+  for (let i = 0; i < rhs.length - 1; i += 1) {
+    if (rhs[i] !== '$' || rhs[i + 1] !== '{') continue;
+    let j = i + 2; let depth = 0;
+    while (j < rhs.length) {
+      if (rhs[j] === '{') depth += 1;
+      else if (rhs[j] === '}') { if (depth === 0) break; depth -= 1; }
+      j += 1;
+    }
+    inner.push(rhs.slice(i + 2, j).trim());
+    i = j;
+  }
+  const parts = inner.length ? inner : [rhs];
+  return parts.every((p) => nonTextShape(p) !== null);
+}
+
+/**
+ * Every interpolation that is neither escaped nor mechanically non-text,
+ * classified by hand. An expression not on this list fails the phase.
+ *
+ * The list is the point, not the friction: it is the whole set of values these
+ * scripts print without escaping them, readable on one screen.
+ */
+const REVIEWED_NON_TEXT = new Map([
+  ['h.line', 'a line number'],
+  ['f.lines', 'a line count'],
+  ['f.liveEntries', 'a count'],
+  ['f.completedEntries', 'a count'],
+  ['f.completedPercent', 'a percentage'],
+  ['f.entriesMarkedDone', 'a count'],
+  ['f.inlineDoneMarkers', 'a count'],
+  ['verdict.completedPercent', 'a percentage'],
+  ['r.gapDays', 'a day count'],
+  ['totalLive', 'a reduce over per-file counts'],
+  ['totalMarked', 'a reduce over per-file counts'],
+  ['kb(f.diskBytes)', 'kb() formats a byte count'],
+  ['kb(f.completedBytes)', 'kb() formats a byte count'],
+  ['kb(totalDiskBytes)', 'kb() formats a byte count'],
+  ['kb(config.splitThresholdBytes)', 'kb() of a value loadConfig validated as a number'],
+  ['pad(kb(s.bytes), 8)', 'pad() of a formatted byte count'],
+  ['pad(`${s.entries} `, 5)', 'pad() of an entry count; the mask blanked the literal'],
+  ['day(r.entryCommit?.date)', 'day() formats a git author date, not a subject'],
+  ['day(r.newestReferent.commit.date)', 'day() formats a git author date, not a subject'],
+  ['r.newestReferent.commit.hash.slice(0, 8)', 'a hash git itself produced'],
+  ["r.entryCommit?.hash.slice(0, 8) ?? ' '", 'that hash or a dash literal the mask blanked'],
+  ['key', 'a verdict name from the closed list this tool writes itself'],
+  ['explain[key]', "this tool's own sentence for that verdict"],
+  ["parts.join(' ')", 'two counts and two caps, assembled just above the sink'],
+]);
+
+/**
+ * Reached stdout unescaped, reviewed, and filed rather than fixed here.
+ *
+ * `root` is normally the operator's own argv and `config._source` is a fixed
+ * filename made relative, so neither is reachable from the audited repo's
+ * CONTENT - which is how they survived every round of "send everything
+ * human-readable through the escaping helpers". What is left is a clone
+ * directory NAMED from a URL rather than typed: git derives the directory from
+ * the URL path, so a percent-escaped CR there lands in the name and then in
+ * the report's first line.
+ *
+ * Listed rather than fixed because that edit is a `scripts/` change and this
+ * is a test; it is filed in TODOS.md. What the list buys today is that the set
+ * cannot GROW without this phase failing, and cannot shrink without somebody
+ * deleting the entry.
+ */
+const KNOWN_UNESCAPED = [
+  ['dead.mjs', 'root'],
+  ['stale.mjs', 'root'],
+  ['measure.mjs', 'root'],
+  ['measure.mjs', 'config._source'],
+];
+
+/**
+ * The mask itself, against the shapes that break a naive scanner.
+ *
+ * Every one of these is in the scripts today: `dead.mjs` really does push the
+ * string `'//'`, `lib.mjs` really does hold a regex with a bracket class, and
+ * `measure.mjs` really does nest a template inside an interpolation. Driving
+ * the mask through the corpus alone cannot fail on any of them, because the
+ * corpus is currently clean - measured: a mask that stops blanking block
+ * comments still passes every corpus check, and merely scans two more "sinks"
+ * out of a docblock that happens to quote `console.log`.
+ */
+function checkMaskSource() {
+  const sinks = (src) => printSinks(maskSource(src));
+  const exprs = (src) => {
+    const masked = maskSource(src);
+    return sinks(src).flatMap(([a, b]) => interpolations(masked, a, b)
+      .map(([x, y]) => masked.slice(x, y).trim()));
+  };
+
+  check('the mask blanks a line comment',
+    !maskSource('const a = 1; // ${lead}\n').includes('${'));
+  check('the mask blanks a block comment',
+    sinks('/* console.log(`${lead}`) */\nconst a = 1;\n').length === 0);
+  check('a string holding // does not open a comment',
+    sinks("openers.push('//');\nconsole.log(`${safeField(a)}`);\n").length === 1);
+  // Both of these assert where the call ENDS, not what it contains: a stray
+  // `)` that closes the span early leaves the interpolation before it intact,
+  // so an expression-level assertion passes while the scan has lost the rest
+  // of the statement. Measured - both of these read clean until the span was
+  // the thing being checked.
+  const parenInString = "console.log(`${safeField(a)}`, ')');\n";
+  check('a paren inside a string does not close the call',
+    sinks(parenInString)[0][1] === parenInString.indexOf(';'));
+  const regexInSink = "console.log(`${safeField(a.replace(/[)]/g, ''))}`);\n";
+  check('a regex body is blanked rather than scanned',
+    sinks(regexInSink)[0][1] === regexInSink.indexOf(';'));
+  check('division is not read as a regex',
+    exprs('const n = a / b;\nconst m = c / d;\nconsole.log(`${n}`);\n').join() === 'n');
+  // The outer expression is returned whole, which is why a tainted name nested
+  // inside a formatter is still seen by the repo-derived check below.
+  check('a nested template comes back as one expression',
+    exprs('console.log(`${pad(`${x}`, 5)}`);\n').join() === 'pad(`${x}`, 5)');
+  check('a repo-derived name nested inside a formatter is still found',
+    repoDerivedNames(exprs('console.log(`${pad(`${lead}`, 5)}`);\n').join()).join() === 'lead');
+}
+
+function testEscapingConventions() {
+  checkMaskSource();
+
+  const names = readdirSync(SCRIPTS).filter((f) => f.endsWith('.mjs')).sort();
+  check('the convention scan reads every script, not a remembered list',
+    names.length >= 4, `found ${names.join(', ')}`);
+
+  const unescaped = [];
+  const unreviewed = [];
+  const wrongHelper = [];
+  let interpolationCount = 0;
+  let escapedCount = 0;
+
+  for (const name of names) {
+    const src = readFileSync(join(SCRIPTS, name), 'utf8');
+    const masked = maskSource(src);
+    check(`${name}: the mask preserves offsets`, masked.length === src.length);
+
+    for (const [from, to] of printSinks(masked)) {
+      // 3. `safe()` where `safeField()` is meant. The two longer names are
+      //    removed first so their own `safe`/`Field` prefix cannot match.
+      const bare = masked.slice(from, to).replace(/\b(?:safeField|jsonSafe)\s*\(/g, '');
+      if (/\bsafe\s*\(/.test(bare)) wrongHelper.push(`${name}:${src.slice(0, from).split('\n').length}`);
+
+      for (const [x, y] of interpolations(masked, from, to)) {
+        const expr = masked.slice(x, y).replace(/\s+/g, ' ').trim();
+        const line = src.slice(0, x).split('\n').length;
+        interpolationCount += 1;
+
+        const derived = repoDerivedNames(expr);
+        if (derived.length) { unescaped.push({ name, line, expr, derived }); continue; }
+
+        const shape = nonTextShape(expr);
+        if (shape) {
+          if (shape === 'an escaping call' || shape === 'each element escaped') escapedCount += 1;
+          continue;
+        }
+        if (REVIEWED_NON_TEXT.has(expr)) continue;
+        if (/^[A-Za-z_$][\w$]*$/.test(expr)) {
+          const rhs = resolveLocalConst(masked, expr, x);
+          if (rhs !== null && resolvesNonText(rhs)) continue;
+        }
+        unreviewed.push(`${name}:${line} \`${expr}\``);
+      }
+    }
+  }
+
+  // A scan that reached nothing looks exactly like a scan that found nothing
+  // wrong, which is a failure this repo has already shipped once.
+  check('the scan actually reached the print sinks',
+    interpolationCount >= 80 && escapedCount >= 20,
+    `${interpolationCount} interpolation(s), ${escapedCount} escaper-covered`);
+
+  // 1. Repo-derived text outside an escaping call. The allowlist is applied
+  //    here and nowhere earlier, so it can excuse a KNOWN site and nothing else.
+  const allowed = new Set(KNOWN_UNESCAPED.map(([f, e]) => `${f} ${e}`));
+  const surprises = unescaped.filter((u) => !allowed.has(`${u.name} ${u.expr}`));
+  check('no repo-derived value reaches a print sink unescaped',
+    surprises.length === 0,
+    surprises.map((u) => `${u.name}:${u.line} \`${u.expr}\` carries ${u.derived.join(', ')}`).join('; '));
+  check('the reviewed-unescaped list has no stale entries',
+    unescaped.length === KNOWN_UNESCAPED.length,
+    `${unescaped.length} found, ${KNOWN_UNESCAPED.length} listed - delete the entry when the site is fixed`);
+
+  // 2. Everything else classified by shape, by a local const, or by hand.
+  check('every other interpolation is escaped, non-text by shape, or reviewed',
+    unreviewed.length === 0,
+    unreviewed.join('; '));
+
+  // 3.
+  check('no print sink uses safe() where safeField() is meant',
+    wrongHelper.length === 0, wrongHelper.join(', '));
+
+  checkFlushConvention(names);
+}
+
+/**
+ * 4. The flush half.
+ *
+ * `console.log(big); process.exit(0)` delivered exactly 65,536 bytes of a
+ * 596,029-byte document on a real 439-file repo and exited 0. The three
+ * `--json` sinks route through `writeStdout` instead; nothing enforced that
+ * they keep doing so, or that a later `console.log` does not run after one and
+ * lose both the flush and - since the `'error'` listener is process-wide - the
+ * stack trace it would otherwise have thrown.
+ */
+function checkFlushConvention(names) {
+  for (const name of names) {
+    const src = readFileSync(join(SCRIPTS, name), 'utf8');
+    const masked = maskSource(src);
+    const sites = [...masked.matchAll(/writeStdout\s*\(/g)]
+      // The definition in lib.mjs is not a call site.
+      .filter((hit) => !/(?:function|const)\s+$/.test(masked.slice(Math.max(0, hit.index - 24), hit.index)));
+
+    for (const hit of sites) {
+      const line = src.slice(0, hit.index).split('\n').length;
+      check(`${name}:${line} awaits writeStdout`,
+        /await\s+$/.test(masked.slice(Math.max(0, hit.index - 12), hit.index)),
+        'unawaited, the text report below runs before the exit lands');
+
+      const after = masked.slice(hit.index);
+      const exitAt = after.search(/process\.exit\s*\(/);
+      const logAt = after.search(/console\.log\s*\(/);
+      check(`${name}:${line} exits before it prints again`,
+        exitAt !== -1 && (logAt === -1 || exitAt < logAt),
+        'output after a writeStdout is neither flushed nor able to report its own failure');
+    }
+
+    check(`${name} routes any --json payload through writeStdout`,
+      !/console\.log\s*\(\s*(?:jsonSafe|JSON\.stringify)\s*\(/.test(masked),
+      'console.log on a pipe truncates at one 65,536-byte buffer and exits 0');
+  }
+}
+
 // -------------------------------------------------------------------- driver
 
 let root;
@@ -2149,6 +2665,7 @@ try {
     ['parsing-rules', testParsingRules],
     ['every-verdict', testEveryVerdict],
     ['below-toplevel', testBelowToplevelFallback],
+    ['escaping-conventions', testEscapingConventions],
   ]) {
     try {
       phase(root);
