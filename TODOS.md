@@ -459,14 +459,29 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   and cost the stable ordering that makes two runs diffable.
   (self-review, 2026-08-17)
 
+- **Nothing documents the exit codes, and there are now three of them.**
+  (bundle 4, 2026-08-21) 0 is success, 2 is "the input was unusable" at four
+  sites, and 3 is now "the report could not be written". `README.md` mentions
+  none of them and neither does `skills/todokeeper/SKILL.md`, so the one channel
+  a script consumer can act on without parsing anything is undocumented — and
+  the whole point of separating 3 from 2 is that a caller can tell a failed
+  WRITE from a failed READ and retry differently. A README change, deliberately
+  not bundled with the fix that created the third code.
+
 - **`writeStdout` is a convention at two sinks, and nothing enforces it.**
   Identical shape to the `safeField` entry above. The `--json` sinks in all
   three scripts now flush before `process.exit`, but every other `console.log`
   is still async-on-a-pipe and safe only because a text report ends by falling
   off the end of the module. A future `process.exit()` added after any of them
   reintroduces the truncation, silently and with exit status 0. No lint rule,
-  no wrapper, no test outside the one `dead.mjs` case.
-  (self-review, 2026-08-17)
+  no wrapper, no test outside the one `dead.mjs` case. Bundle 4 raised the
+  stakes rather than lowering them: the `'error'` listener `writeStdout` now
+  attaches is process-wide, so a `console.log` running after it loses the
+  native stack trace as well as the flush — swallowed with no diagnostic at
+  all. Safe today only because every call site exits on the next statement,
+  which is the same unenforced ordering this entry is about.
+  (self-review, 2026-08-17; sharpened by the bundle 4 security round,
+  2026-08-21)
 
 - **The pipe regression check covers `dead.mjs` only.** `stale.mjs` and
   `measure.mjs` carry the same pattern and are not exercised: pushing
@@ -474,28 +489,9 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   is a benchmark rather than a smoke test. On a real 439-file repo `stale.mjs`
   DID cross the boundary (83,136 bytes) and `measure.mjs` did not (3,336), so
   the untested half is not the hypothetical half. Deleting `writeStdout` from
-  either script still passes the suite. (self-review, 2026-08-17)
-
-- **`writeStdout` cannot reject, so a genuine write failure still exits 0.**
-  The promise has no reject path: any error reaching `process.stdout.write`'s
-  callback is swallowed and the `process.exit(0)` behind it fires anyway. That
-  is deliberate — it reproduces what `console.log` did, so `| head` closing the
-  pipe does not become an unhandled rejection — but it means an `ENOSPC` on a
-  `>` redirect produces a truncated document with a success status and no
-  diagnostic, which is the exact shape of the bug the helper was written to fix.
-  Narrow: the redirect target is the operator's choice and unreachable by a
-  hostile repo, so it sits outside this tool's threat model. The fix is to
-  distinguish EPIPE (swallow, as now) from every other write error (stderr line,
-  non-zero exit). (security review round 10, 2026-08-17)
-
-- **`test/smoke.mjs` builds an `sh -c` command by interpolation, not arguments.**
-  `JSON.stringify` escapes `"` and backslash and leaves `$` and backticks alone,
-  so the quoting is incidental rather than principled. Not exploitable: both
-  interpolated values are internally generated — this repo's own script path and
-  an `mkdtempSync` name — and this file never sees a third-party repo's content.
-  Left because the shape is what matters, and the fix is one line:
-  `sh -c '... "$1" ... "$2"' -- "$dead" "$root"`.
-  (security review round 10, 2026-08-17)
+  either script still passes the suite. (self-review, 2026-08-17; the
+  write-failure checks added in bundle 4 inherit the same limit — `/dev/full`
+  and the closed pipe are both driven through `dead.mjs` only)
 
 ## Enumeration
 
@@ -578,6 +574,64 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
 The five most recent. Everything older moved to `TODOS-DONE.md` when this file
 crossed the 50,000-byte split threshold the tool itself reports; the constraints
 those entries still impose were lifted into `CLAUDE.md` on the way out.
+
+- **A failed write to stdout printed a native stack trace, and the entry
+  describing it was wrong about which failure it was.** Filed as "`writeStdout`
+  cannot reject, so a genuine write failure still exits 0", with the symptom
+  given as a truncated document carrying a success status and NO diagnostic.
+  Measured on Node 24.17.0 before touching anything, that is not what happened.
+  `process.stdout` reports a failed write TWICE — once to the write callback,
+  once as an `'error'` event on the stream — and `writeStdout` listened for
+  neither, so the default `EventEmitter` behaviour threw the event:
+
+  - `dead.mjs --json | head -c 10` printed 497 bytes of
+    `node:events:487 / throw er; // Unhandled 'error' event` to stderr, on 5
+    runs out of 5, and exited 0. `| head` is a normal thing to do to a JSON
+    report; the correct output there is nothing at all.
+  - `measure.mjs --json > /dev/full` printed the same shape with `ENOSPC` and a
+    `node:internal/fs/sync_write_stream` frame, and exited **1** — so the "exits
+    0" in the entry title was false for the exact case the entry was about.
+
+  The helper's own docblock had been asserting the opposite for ten rounds:
+  "resolving on error rather than rejecting keeps `| head` from turning an EPIPE
+  into an unhandled rejection". True as written, and useless — it avoided an
+  unhandled REJECTION and left an unhandled EVENT, which is strictly worse for a
+  tool whose entire output contract is a report an operator can read.
+
+  Fixed as the entry prescribed, once the real symptom was known: an `'error'`
+  listener attached and never removed (the event and the callback have no
+  guaranteed order, and both orders were observed), EPIPE resolved silently, and
+  every other errno routed to `failWrite` — one line to stderr through
+  `writeSync`, then exit 3. `writeSync` rather than `console.error` because
+  `process.stderr` is asynchronous on a pipe and `process.exit` discards its
+  buffer, which is the bug the helper exists to fix. Exit 3 rather than 2
+  because 2 already means the input was unusable, and failing to write the
+  answer is a different fact from failing to read the question. `failWrite`
+  exits rather than reporting upward because all four call sites are
+  `await writeStdout(...)` followed immediately by `process.exit(0)`, which
+  would overwrite `process.exitCode` — and this repo has twice watched a
+  convention go unenforced at a call site.
+
+  Measured after: EPIPE gives 0 stderr bytes and status 0 on 5 runs out of 5;
+  `> /dev/full` gives exit 3 and one 81-byte line, for all three scripts.
+
+  The second half of the bundle was the `sh -c` interpolation in
+  `test/smoke.mjs`, filed as a shape problem with the note "left because the
+  shape is what matters". It is now positional — `'node "$1" --root "$2" --json
+  | cat', 'sh', dead, root` — and, more usefully, it is now TESTED rather than
+  asserted: the pipe fixture's root directory is now named with a command
+  substitution and a backtick pair in it, both of which a double-quoted
+  interpolation still expands and `JSON.stringify` still does not escape.
+  Reverting to the old form fails two checks.
+
+  Verified: 191 -> 194 checks. Each of the four new guarantees was
+  mutation-tested separately — reverting the interpolation fails 2, ignoring the
+  callback error fails 2, exiting 0 from `failWrite` fails 1, dropping the
+  `'error'` listener fails 1 — and each failure was the assertion that should
+  have caught it. Filed rather than fixed: nothing documents the three exit
+  codes.
+  (bundle 4, 2026-08-21; closes two security-review-round-10 entries of
+  2026-08-17)
 
 - **The control-byte scan read five files and could not see the characters that
   put it there.** `testNoControlBytes` asserted over the four `scripts/*.mjs`
