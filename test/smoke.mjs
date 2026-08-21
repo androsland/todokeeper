@@ -66,7 +66,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  DEFAULTS, classifyReferent, buildFileIndex, loadConfig,
+  DEFAULTS, classifyReferent, buildFileIndex, loadConfig, entries,
   MAX_ENTRIES as DEAD_ENTRY_CAP, MAX_FROM as DEAD_FROM_CAP,
 } from '../scripts/lib.mjs';
 
@@ -1152,6 +1152,101 @@ function testIgnoreValidation() {
   }
 }
 
+/**
+ * `entries()` is a GENERATOR, and the line walk inside it replaced
+ * `body.split('\n')`. Both are memory changes with no intended effect on what
+ * gets reported, so the checks here are equivalence checks: same entries, same
+ * text, same boundaries — plus the one behavioural fact callers depend on, that
+ * the result is a single-use iterator with no `.length`.
+ *
+ * The line walk is the part worth pinning. `split('\n')` has two edge results
+ * that are easy to lose by hand — the trailing empty string when the input ends
+ * in a newline, and the single empty string for empty input — and losing either
+ * silently changes where an entry's text ends.
+ */
+function testEntriesGenerator() {
+  const styles = DEFAULTS.entryStyles;
+
+  // ---- A. it is an iterator, not an array. `measure.mjs` used to bind the
+  // array and read `.length` twice; if this ever regresses to returning one,
+  // the memory win is gone and nothing else in the suite would notice.
+  const it = entries('- **One**\n- **Two**\n', styles);
+  check('`entries()` returns an iterator, not an array',
+    typeof it[Symbol.iterator] === 'function' && typeof it.next === 'function'
+      && !Array.isArray(it) && it.length === undefined,
+    `Array.isArray=${Array.isArray(it)} length=${it.length}`);
+  check('the iterator is single-use',
+    [...it].length === 2 && [...it].length === 0,
+    'a generator drains; a caller that iterates twice must see the second pass empty');
+
+  // ---- B. the line walk is `split('\n')` exactly. Compared against the real
+  // thing on the shapes that distinguish them, including the two empty-string
+  // results, and on a body whose last entry runs to a trailing newline.
+  const bodies = [
+    '',
+    '\n',
+    '- **Only entry**',
+    '- **Only entry**\n',
+    '- **First**\n- **Second**\n',
+    'preamble with no bullet\n- **After prose**\n\nstill the same entry\n',
+    '- **Fenced**\n  ```\n  - **not an entry**\n  ```\n  after the fence\n',
+    '- **Trailing blank lines**\n\n\n',
+  ];
+  for (const body of bodies) {
+    const got = [...entries(body, styles)].map((e) => e.text);
+    const want = referenceEntries(body, styles);
+    check(`line walk matches split('\\n') for ${JSON.stringify(body).slice(0, 44)}`,
+      JSON.stringify(got) === JSON.stringify(want),
+      `got ${JSON.stringify(got)}\n      want ${JSON.stringify(want)}`);
+  }
+}
+
+/**
+ * The pre-generator entry splitter, kept verbatim as the oracle for phase B.
+ * It exists to be a SECOND implementation — if it is ever "simplified" to call
+ * `entries()`, phase B compares the code under test against itself and passes
+ * unconditionally.
+ */
+function referenceEntries(body, entryStyles) {
+  const lines = body.split('\n');
+  const out = [];
+  let current = null;
+  let fence = null;
+  for (const line of lines) {
+    const fenceMatch = /^\s*(```+|~~~+)/.exec(line);
+    if (fenceMatch) {
+      if (fence === null) fence = fenceMatch[1][0];
+      else if (line.trimStart().startsWith(fence)) fence = null;
+      if (current) current.push(line);
+      continue;
+    }
+    if (fence === null && isEntryStartOracle(line, entryStyles)) {
+      if (current) out.push(current);
+      current = [line];
+    } else if (current) {
+      current.push(line);
+    }
+  }
+  if (current) out.push(current);
+  return out.map((e) => e.join('\n'));
+}
+
+/**
+ * Entry-start detection for the oracle. NOT a second copy of the real rule —
+ * it covers only the shapes phase B's fixtures use, which is why phase B's
+ * bodies are hand-written rather than drawn from a repo.
+ */
+function isEntryStartOracle(line, entryStyles) {
+  const m = /^(\s*)(?:([-*+])\s+|(\d+)[.)]\s+)?(.*)$/.exec(line);
+  if (!m) return false;
+  const indent = m[1].length;
+  if (indent > 1) return false;
+  if (m[2] && entryStyles.includes('bullet')) return true;
+  if (m[3] && entryStyles.includes('numbered')) return true;
+  if (entryStyles.includes('bold') && /^\*\*/.test(m[4])) return true;
+  return false;
+}
+
 // -------------------------------------------------------------------- driver
 
 let root;
@@ -1176,6 +1271,7 @@ try {
     ['walk-fallback', testWalkFallback],
     ['lead-marked-done', testLeadMarkedDone],
     ['ignore-validation', testIgnoreValidation],
+    ['entries-generator', testEntriesGenerator],
   ]) {
     try {
       phase(root);
