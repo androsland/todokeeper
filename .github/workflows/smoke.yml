@@ -1,0 +1,56 @@
+# Runs `node test/smoke.mjs` on every pull request and on every push to main.
+#
+# Until now nothing invoked the suite, so it protected the edits of whoever
+# remembered to run it. The phase that made that worth fixing is the full-tree
+# control-byte scan: it reads `git ls-files`, and two of the files it covers are
+# `skills/*/SKILL.md`, which an agent LOADS AND FOLLOWS.
+name: smoke
+
+on:
+  # `pull_request` covers branches; `push` on main only covers what lands after
+  # a merge. Together they check everything once rather than twice.
+  push:
+    branches: [main]
+  pull_request:
+  # Deliberately no `paths-ignore`. The usual markdown exclusion would remove
+  # exactly the coverage the control-byte scan exists for: 6 of the 16 tracked
+  # files are markdown, and two of those are the `SKILL.md` files above, so a
+  # docs-only diff can genuinely fail this suite. CI minutes are free on a
+  # public repo, which is the other half of why nothing here needs excluding.
+
+# The suite reads its own checkout and writes nothing back, so nothing here
+# needs more than read. There are no secrets in this repo and no deploy step.
+permissions:
+  contents: read
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  # Superseded PR pushes are worth cancelling; a main run is a record and is not.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  smoke:
+    # ubuntu is a requirement, not a default: the pipe-truncation phase shells
+    # out to `sh` and writes to `/dev/full` to force a failing write.
+    runs-on: ubuntu-latest
+    # The suite takes about 5 seconds. The cap is not about that -- it is
+    # because `maskSource` is quadratic in the longest line of the files it
+    # scans (see TODOS.md), so the shape of a bad day here is a hang, not a
+    # failure, and a hang needs an outside bound.
+    timeout-minutes: 5
+    steps:
+      # A real `.git` is load-bearing. Without one `git ls-files` fails and the
+      # control-byte scan falls back to five files -- which the suite then fails
+      # on `files.length >= 10`, deliberately, so a narrowed scan can never
+      # report like a full one. The checkout is what stops that from firing.
+      - uses: actions/checkout@v4
+
+      # Pinned to a major rather than a SHA. A moved tag would run unreviewed
+      # code here, and the reason that is acceptable is specific rather than
+      # general: this job holds no secrets and a read-only token to a repo that
+      # is already public. A job that gains either should pin by digest.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - run: node test/smoke.mjs
