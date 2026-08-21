@@ -22,7 +22,11 @@ have stopped agreeing with the repo, so you can go and read those.
 /plugin install todokeeper
 ```
 
-Then ask Claude to audit, split, or sweep the TODO file, and the skill loads.
+Two skills load from it. Ask Claude to audit, split, or sweep the TODO file and
+`todokeeper` loads. Ask what to work on next — or to "fix everything in
+TODOS.md" — and `next` loads instead: it partitions the entries by whether they
+are actually pending, shows the evidence for each call, and takes one ruled item
+to a PR. It is deliberately not a burn-down; the reasoning is in the skill.
 
 ## The three scripts
 
@@ -466,7 +470,7 @@ suite itself must carry no literal control byte outside tab, newline and
 carriage return. In a tool whose subject is control characters, a stray one is
 invisible in every diff view and silently changes what it matches. It found a
 literal ESC in its own explanatory comment on its first run. It covers those
-five files only — not the skill, the README or any config — and nothing runs it
+five files only — not the skills, the README or any config — and nothing runs it
 for you. It is also blind to the bidi overrides it teaches the reports to
 escape: those are format characters, not control characters, and four literal
 ones reached `lib.mjs` while that very escaping was being written.

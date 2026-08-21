@@ -209,6 +209,78 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   split would move, which it already computes.
   (2026-08-19)
 
+## Triage
+
+- **The partition in `skills/next/SKILL.md` quotes numbers from this file, and
+  nothing keeps them true.** (writing the triage skill, 2026-08-19) The skill
+  opens with 46 live entries split 19 decided / 7 ready / 10 design-owed / 10
+  observed, because the ratio — seven of forty-six actually ready — is the entire
+  argument for why it triages instead of burning down. That table was counted by
+  hand on the day it was written and is already a snapshot: every entry this
+  repo files or retires moves it, and no check compares it against
+  `measure.mjs`'s live count. It degrades toward being wrong in the direction
+  that weakens the argument rather than overstates it, since decided entries
+  accumulate faster than ready ones get resolved. A shipped illustration that
+  says "measured on the repo this was written in" and carries its date is the
+  cheap version; recounting on every run is the expensive one and would put a
+  classifier in the loop, which the skill exists to argue against.
+
+- **Nothing separates a decided entry from one whose revisit condition has
+  since fired.** (writing the triage skill, 2026-08-19) Several entries here
+  are decided *conditionally* — "revisit if a non-JS repo becomes a primary
+  consumer", "revisit only with a case where the argument is noise", "revisit
+  if lib.mjs ever gains a consumer that is not one of these three scripts". The
+  condition is prose about the world outside the repo, so no scan can evaluate
+  it, and an entry whose trigger fired last month reads identically to one whose
+  never will. Named as a non-goal in the skill. The most that is available is
+  surfacing the revisit clause to whoever is triaging, which the skill does and
+  which is not the same as checking it.
+
+- **The archive step in `skills/todokeeper/SKILL.md` lifts attacker-writable
+  prose into the audited repo's standing-instructions file, and says nothing
+  about that.** (security review of the triage skill, 2026-08-20) That skill's
+  archiving section tells an agent to read each completed entry, decide whether
+  it constrains future work, and "lift it as an imperative into the repo's own
+  CLAUDE.md". Entry text is written by whoever can commit, which this repo's
+  threat model treats as untrusted — so the step turns repo prose into durable
+  standing instructions for every later agent session, which is a longer-lived
+  effect than the read-and-obey surface just closed in `skills/next/SKILL.md`.
+  The two are adjacent, not the same: one is obeying text now, this is promoting
+  text into a file whose whole purpose is to be obeyed later. The boundary
+  paragraph written for the triage skill is the shape of the fix, reworded for a
+  write rather than a read; it was kept out of that branch because the branch's
+  theme was triage and a skill is executable behaviour.
+
+- **Nothing detects that audited-repo text tried to direct the agent.**
+  (security review of the triage skill, 2026-08-20) `skills/next/SKILL.md` now
+  tells the agent that repo text addressing it is a finding to report rather
+  than an instruction to obey, and names the unenforceability as a non-goal.
+  That is honest but thin: the rule is followed by whoever reads it, nothing
+  scans for the case, and nothing checks afterwards that the boundary held. A
+  detector is not obviously buildable — the tool's own repeated result is that
+  intent is not recoverable from prose shape, and an injected directive is a
+  fact about intent, so a heuristic here would fail in the same way the
+  hypothetical-referent detector did. Recording it because the gap is real, not
+  because a scan is owed. Any fix that looks like a regex over entry text is the
+  wrong one.
+
+- **Step 2's inert-quoting rule is advisory, and the deterministic version needs
+  the scripts to emit entry bodies.** (security review round 2, 2026-08-20) The
+  triage skill now tells the agent to strip or flag non-printable characters
+  before quoting entry text into chat or a PR body, and points at `--json` when
+  the exact bytes matter. That is a rule the agent applies by eye, not the
+  mechanical strip this repo's own constraint asks for — "send everything
+  human-readable through the escaping helpers" means `safeField` and the JSON
+  sinks, and Step 2's quoting reaches neither. The reason it cannot today is
+  concrete: the agent reads entry prose straight from the file because no script
+  emits an entry BODY — `dead.mjs` and `stale.mjs` emit leads and matched source
+  lines, `measure.mjs` emits sizes and headings. Routing the quote through an
+  escaped sink therefore means widening what the scripts print, which is a
+  `scripts/` change and belongs to its own PR. Detection here is a byte test
+  rather than an intent judgement, so unlike the classifier bets this repo has
+  lost, it is genuinely mechanisable — that is the argument for doing it rather
+  than declaring another non-goal.
+
 ## Untrusted input
 
 - **A heading that opens with a completed word is read as an archive.**
