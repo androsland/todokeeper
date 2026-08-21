@@ -275,7 +275,7 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   reset, so the scan runs to end of line, and a line of repeated `=[/`
   re-triggers a near-full-line scan at almost every position. Measured on
   `'=[/'.repeat(K)`: 43ms / 123ms / 627ms / 1860ms at 6/12/24/48 KB, quadrupling
-  per doubling. The driver is line length, not file size -- the same 48,000
+  per doubling. The driver is line length, not file size — the same 48,000
   bytes wrapped at 80 columns costs 11.3ms, 165x less, and a 48KB line buried in
   100KB of ordinary source still costs 1899ms. Not reachable from the audited
   repo: `maskSource` only ever reads `scripts/*.mjs`, resolved from
@@ -283,15 +283,15 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   contributor's own suite run and the longest line in any scanned file today is
   210 characters. It becomes a real bound the day anything points this scanner
   at repo-supplied text. (security review, 2026-08-21; mechanism corrected on
-  re-measurement -- the review read the scan as running to EOF, but a newline
+  re-measurement — the review read the scan as running to EOF, but a newline
   does break it, which is why wrapping the identical bytes is 165x cheaper)
 
 - **The two phase-17 allowlists have different key shapes, and only one of them
   goes stale loudly.** `KNOWN_UNESCAPED` is keyed `(file, expr)` and is backed
   by `unescaped.length === KNOWN_UNESCAPED.length`, so it fails both on a new
   unescaped site and on one that was fixed without deleting its entry.
-  `REVIEWED_NON_TEXT` is keyed on expression TEXT alone -- `.has(expr)`, no
-  file, no cardinality assert -- so a future variable reusing a classified name
+  `REVIEWED_NON_TEXT` is keyed on expression TEXT alone — `.has(expr)`, no
+  file, no cardinality assert — so a future variable reusing a classified name
   in another script silently inherits the verdict written for the original.
   `key` is the live example: classified as a verdict name from the closed list
   this tool writes itself, for `dead.mjs:421`, and any later `${key}` anywhere
@@ -420,12 +420,25 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   for WHICH file to drop — a choice with no obviously right answer.
   (security review, 2026-08-17)
 
-- **The control-byte scan still runs only when someone runs it.**
-  (bundle 3, 2026-08-21) `testNoControlBytes` now reads the tracked tree and
-  catches bidi, but nothing invokes the suite — no hook, no CI, no pre-commit —
-  so it protects the edits of whoever remembers `node test/smoke.mjs`. Wiring a
-  trigger is executable behaviour and gets its own change; it is the one half of
-  the original entry that this bundle deliberately did not take.
+- **A control byte can still be committed; CI catches it at PR time, not before.**
+  `.github/workflows/smoke.yml` closes the CI half of the original entry, and a
+  pre-commit hook is the half still open. The difference is where the bad commit
+  exists: CI fails a PR that already has the byte in its history, so the fix is
+  an amend or a follow-up commit rather than a rejected write. Deliberate for
+  now — a hook is per-clone, installs itself nowhere, and is skipped by
+  `--no-verify`, so it is a convenience that cannot be relied on, whereas the
+  workflow runs whether or not anyone set it up. Revisit only if a control byte
+  actually lands and the amend proves expensive. (bundle 8, 2026-08-21)
+
+- **The suite is exercised on exactly one Node version and its floor is
+  unmeasured.** The workflow pins `node-version: '24'` because that is what it
+  was developed against; nothing establishes that the scripts or the suite run
+  on 20 or 22, and nothing will notice when 24 goes end-of-life. The scripts use
+  `Object.hasOwn` (Node 16.9+) and `node:` specifiers, so the real floor is
+  probably far below 24, but "probably" is the problem — a plugin is loaded by
+  whatever Node its host ships. A matrix would answer it; it was left out
+  because it makes a support claim this repo has never made and this change did
+  not measure. (bundle 8, 2026-08-21)
 
 - **The scanned character set matches `FIELD_UNSAFE`, which is narrower than
   "invisible in a diff".** (bundle 3, 2026-08-21) The scan looks for
@@ -630,7 +643,7 @@ Everything older than these moved to `TODOS-DONE.md` when this file crossed the
 entries still impose were lifted into `CLAUDE.md` on the way out.
 
 This section was cut to the five most recent at that split and has grown back
-to thirteen since, so it is **not** "the five most recent" any more and the line
+to fourteen since, so it is **not** "the five most recent" any more and the line
 saying it was has been removed rather than left to read as current. Count it,
 do not increment it: this line said eleven while the file held twelve, because
 each sweep added one to the number it found written down instead of running
@@ -638,6 +651,35 @@ each sweep added one to the number it found written down instead of running
 cut is blocked on a different fact: `## Completed` has no entries for the work
 merged as PRs #6 and #7, and archiving a stale section keeps five older entries
 while archiving the recent ones. Write those two first, then split.
+
+- **The suite now runs without being remembered.** Nothing invoked
+  `node test/smoke.mjs` — no hook, no CI, no pre-commit — so every phase in it
+  protected only the edits of whoever thought to run it.
+  `.github/workflows/smoke.yml` runs it on every pull request and on every push
+  to main. Suite 362 -> 363, because the workflow file is itself tracked and the
+  control-byte scan reads the tracked tree: it added a check by existing.
+
+  Four choices in it are not defaults and are commented as such in the file.
+  `ubuntu-latest` is a requirement — the pipe-truncation phase shells out to
+  `sh` and writes to `/dev/full`. `timeout-minutes: 5` is not sized to the
+  suite's 5 seconds but to `maskSource` being quadratic in the longest line, so
+  the shape of a bad day here is a hang rather than a failure and a hang needs
+  an outside bound. There is no `paths-ignore`, because 6 of the 16 tracked
+  files are markdown and two of those are `skills/*/SKILL.md`, which an agent
+  loads and follows — a docs-only diff can genuinely fail this suite, so the
+  usual markdown exclusion would remove exactly the coverage the phase exists
+  for. And the actions are pinned to majors rather than digests on a reason that
+  is specific rather than general: this job holds no secrets and a read-only
+  token to an already-public repo.
+
+  What made the wiring safe to trust is that the degradation was already loud.
+  `trackedTextFiles` returns null when `git ls-files` does not run and the phase
+  falls back to five files — and then fails `files.length >= 10` on purpose, so
+  a checkout-less run cannot report like a full scan. Verified by the PR's own
+  run: the `pull_request` trigger fires from the branch's copy of the workflow,
+  so the change tested itself before it merged. Two limits stayed open above: no
+  pre-commit hook, and one Node version with an unmeasured floor.
+  (bundle 8, 2026-08-21)
 
 - **Two conventions became checks, and the check found four violations of the
   first one.** `safeField` at every print sink and `writeStdout` before every
