@@ -28,15 +28,16 @@
  *    respectively; that is a benchmark, not a smoke test. The caps are proven
  *    by hand and recorded in TODOS.md, and nothing here would notice if one
  *    were deleted.
- *  - It asserts that verdicts are WELL-FORMED, with two exceptions: the
- *    call-form pair asserts CODE and COMMENT-ONLY by name, so a symbol tier
- *    that stopped separating a live call from a tombstone would fail here.
- *    Everything else is shape-checked only, and the fixture is small enough to
- *    reason about rather than large enough to be a corpus. Measured, not
- *    assumed: reclassifying both symbol returns as prose fails 7 checks here
- *    against 4 on the tree before this phase existed — and 3 of those 4 are
- *    collateral, tripping only because the report empties. The rest is still
- *    caught only by the real-repo parity diff described above.
+ *  - Every verdict is now asserted BY NAME, not merely shape-checked: the four
+ *    symbol tiers, the three path verdicts, and the two precedence rules that
+ *    order them. The precedence rows assert the losing hit is present as well,
+ *    because a label alone cannot tell "code outranks a comment" from "the
+ *    comment was never found". Measured, not assumed: collapsing DOC-ONLY into
+ *    ABSENT fails 1, inverting the comment/doc ladder fails 2, and reporting an
+ *    excluded path as missing fails 4. What is still NOT asserted is any
+ *    verdict on a corpus larger than a fixture that fits on one screen — the
+ *    caps, the ordering of a long report, and anything that only emerges at
+ *    scale are still caught only by the real-repo parity diff described above.
  *  - The control-byte scan reads every TRACKED file, binary extensions aside,
  *    and covers C0-minus-layout, DEL, C1 and the bidi overrides and isolates
  *    that `safeField` escapes on output. What it still does not cover: a file
@@ -54,11 +55,14 @@
  *    `stale.mjs` shells out to `git log -S`; a git old enough to lack a flag it
  *    uses fails here as a test error, which is the right outcome but is not the
  *    same as supporting that git.
- *  - The enumeration phases cover a work-tree root and a non-git root. They do
- *    NOT cover a root BELOW a work tree's toplevel, a git binary that is
- *    missing rather than failing, a listing past the 64MB buffer, or a
- *    submodule gitlink — all four take the same fallback branch, and only the
- *    non-git one is exercised here.
+ *  - The enumeration phases cover a work-tree root, a non-git root, and a root
+ *    BELOW a work tree's toplevel — the last asserted through the verdict it
+ *    changes, not through the mode string, since a tool could report the mode
+ *    honestly and then not act on it. They do NOT cover a git binary that is
+ *    missing rather than failing, a listing past the 64MB buffer, a submodule
+ *    gitlink, or any other git failure: those need a doctored PATH, roughly
+ *    800,000 files, and a fault injector respectively, and take the same
+ *    fallback branch as the two that are covered.
  *  - Nothing here sees personal data that was never gitignored and never named
  *    in `ignore`. No test can: there is no property of such a file that
  *    distinguishes it from source.
@@ -73,7 +77,7 @@ import { fileURLToPath } from 'node:url';
 import {
   DEFAULTS, classifyReferent, buildFileIndex, loadConfig, entries,
   MAX_ENTRIES as DEAD_ENTRY_CAP, MAX_FROM as DEAD_FROM_CAP,
-  notedList, MAX_NOTED,
+  notedList, MAX_NOTED, isEntryStart, isCompletedHeading,
 } from '../scripts/lib.mjs';
 
 const IGNORED_DIR = 'interview';
@@ -1712,6 +1716,409 @@ function testRelativeRootParity() {
   }
 }
 
+// ---------------- 14. the two parsing rules, as a table rather than by hand
+
+/**
+ * `isEntryStart` and `isCompletedHeading` decide what a deferred-work file
+ * MEANS: which lines are entries and which section holds finished work. They
+ * replaced a pair of regexes and were checked by 26 hand-run cases in a
+ * throwaway script, which is to say they have had no net since. These are
+ * those cases, derived from the rules rather than from current output, so a
+ * disagreement is a finding and not a diff to accept.
+ *
+ * Two shapes are asserted here deliberately even though they are WRONG in the
+ * abstract, because both are documented standing limits with the reasoning
+ * written down: `Done criteria` reads as completed (anchoring cannot see that
+ * the heading goes on to mean something else — the retired regex behaved
+ * identically), and a ten-digit ordinal is not an entry (the marker is capped
+ * at nine to bound the match). Changing either is a decision, and it should
+ * have to change a line here that says so.
+ */
+function testParsingRules() {
+  const BULLET = ['bullet'];
+  const NUMBERED = ['numbered'];
+  const BOLD = ['bold-lead'];
+  const ALL = ['bullet', 'numbered', 'bold-lead'];
+
+  const entryCases = [
+    // the three bullet markers, and the separator that makes them one
+    [BULLET, '- an entry', true, 'hyphen bullet'],
+    [BULLET, '* an entry', true, 'asterisk bullet'],
+    [BULLET, '+ an entry', true, 'plus bullet'],
+    [BULLET, '-\tan entry', true, 'a tab separates as well as a space'],
+    [BULLET, '-an entry', false, 'no separator is not a bullet'],
+    [BULLET, '--- an entry', false, 'a horizontal rule is not a bullet'],
+    // indent: one level in is still an entry, two is a nested list
+    [BULLET, ' - an entry', true, 'one space of indent'],
+    [BULLET, '  - a sub-item', false, 'two spaces is a nested item, not an entry'],
+    [BULLET, '\t- an entry', true, 'one tab counts as one column here'],
+    // blockquote prefixes are stripped before anything else is decided
+    [BULLET, '> - an entry', true, 'quoted'],
+    [BULLET, '>- an entry', true, 'quoted with no space after the marker'],
+    [BULLET, '> > - an entry', true, 'nested quote'],
+    [BULLET, '>>- an entry', true, 'nested quote, no spaces'],
+    // a style that is not enabled must not fire
+    [BULLET, '1. an entry', false, 'numbered is off'],
+    [BULLET, '**an entry**', false, 'bold-lead is off'],
+    [BULLET, 'plain prose', false, 'prose'],
+    [BULLET, '', false, 'the empty line'],
+    // numbered, including the nine-digit cap
+    [NUMBERED, '1. an entry', true, 'dot form'],
+    [NUMBERED, '1) an entry', true, 'paren form'],
+    [NUMBERED, '1.an entry', false, 'no separator'],
+    [NUMBERED, '123456789. an entry', true, 'nine digits is the cap and is inside it'],
+    [NUMBERED, '1234567890. an entry', false, 'ten digits is past the cap — deliberate'],
+    [NUMBERED, '- an entry', false, 'bullet is off'],
+    // bold-lead
+    [BOLD, '**an entry**', true, 'bold lead'],
+    [BOLD, '***an entry**', true, 'a third star still opens with two'],
+    [BOLD, '*an entry*', false, 'one star is emphasis, not a lead'],
+    [BOLD, '- **an entry**', false, 'a bullet is not a bold lead — bullet is off'],
+    // several styles at once, and a name outside the closed set
+    [ALL, '- an entry', true, 'all three enabled'],
+    [ALL, '1. an entry', true, 'all three enabled'],
+    [ALL, '**an entry**', true, 'all three enabled'],
+    [['nope'], '- an entry', false, 'an unknown style name matches nothing'],
+    [[], '- an entry', false, 'no styles enabled matches nothing'],
+  ];
+
+  for (const [styles, line, want, why] of entryCases) {
+    let got;
+    try {
+      got = isEntryStart(line, styles);
+    } catch (err) {
+      check(`isEntryStart(${JSON.stringify(line)}, ${JSON.stringify(styles)}) — ${why}`,
+        false, `threw: ${err.message}`);
+      continue;
+    }
+    check(`isEntryStart(${JSON.stringify(line)}, ${JSON.stringify(styles)}) is ${want} — ${why}`,
+      got === want, `got ${got}`);
+  }
+
+  const W = DEFAULTS.completedHeadings;
+  const headingCases = [
+    ['Completed', true, 'the plain case'],
+    ['completed', true, 'case-insensitive'],
+    ['   Completed   ', true, 'trimmed'],
+    ['Done', true, 'a shorter word in the list'],
+    ['Shipped', true, 'another'],
+    ['Merged', true, 'another'],
+    ['Landed', true, 'another'],
+    ['Closed', true, 'another'],
+    ['Archive', true, 'another'],
+    ['Archives', true, 'the plural is listed separately, not stemmed'],
+    // Anchoring is the whole rule, and these are the cases that PROVE it.
+    // `Not completed` does not: the boundary check reads `text[w.length]`,
+    // which for a word found later in the string lands inside that word and
+    // rejects by accident, so unanchoring the match leaves it false either
+    // way. The two below are the shapes where the index lands on a space —
+    // unanchor the match and both flip to completed. Both are headings a real
+    // repo would write, which is the point.
+    ['Not completed', false, 'the word is present but does not start the heading'],
+    ['Work completed this week', false, 'same'],
+    ['Work done', false, 'ANCHORING: unanchor the match and this reads as finished'],
+    ['Features complete', false, 'ANCHORING: same, and it hides a whole live section'],
+    // the word boundary stops a longer word
+    ['Doneness', false, 'a longer word is not the word'],
+    ['Archiver notes', false, 'same'],
+    ['Done2', false, 'a digit continues the word'],
+    ['Done_list', false, 'an underscore continues the word'],
+    ['Done: v2', true, 'punctuation does not continue the word'],
+    ['Done — v2', true, 'nor does a dash'],
+    // one qualifier may precede the word
+    ['Recently completed', true, 'qualifier'],
+    ['Previously shipped', true, 'qualifier'],
+    ['Already done', true, 'qualifier'],
+    ['Recentlycompleted', false, 'a qualifier needs whitespace after it'],
+    ['Recently', false, 'a qualifier alone is not a completed heading'],
+    // Only ONE qualifier is stripped, and the case has to use two DIFFERENT
+    // ones in list order to prove it: the loop never revisits an earlier
+    // qualifier, so a repeated word is rejected whether the `break` is there
+    // or not.
+    ['Recently recently done', false, 'a repeated qualifier — does not prove the break'],
+    ['Recently already done', false, 'only ONE qualifier is stripped'],
+    ['Previously already shipped', false, 'same, further down the list'],
+    // the documented standing limit, asserted so changing it is a decision
+    ['Done criteria', true, 'STANDING LIMIT: reads as completed, and understates live work'],
+    // shapes that are not headings at all
+    ['Open', false, 'a live section'],
+    ['', false, 'the empty heading'],
+    [null, false, 'a non-string'],
+    [42, false, 'a non-string'],
+  ];
+
+  for (const [heading, want, why] of headingCases) {
+    let got;
+    try {
+      got = isCompletedHeading(heading, W);
+    } catch (err) {
+      check(`isCompletedHeading(${JSON.stringify(heading)}) — ${why}`, false, `threw: ${err.message}`);
+      continue;
+    }
+    check(`isCompletedHeading(${JSON.stringify(heading)}) is ${want} — ${why}`,
+      got === want, `got ${got}`);
+  }
+
+  // A repo-supplied word list is untrusted, and an empty string in it matches
+  // at index 0 of every heading — which is every heading. The guard is the
+  // `!w` in the loop, and `Open` does NOT prove it is there: with the guard
+  // removed the boundary check reads `text[0]`, finds a letter, and rejects
+  // for the wrong reason. A heading whose first character is not a letter is
+  // what separates the two, and a tick in a heading is not a contrived input.
+  check('an empty word in the list does not make every heading completed',
+    isCompletedHeading('\u2705 Open', ['']) === false,
+    'an empty needle matches everywhere; the guard is the `!w`, not the boundary check');
+  check('...and the same heading is not completed under the real word list',
+    isCompletedHeading('\u2705 Open', W) === false);
+  check('...and a real word beside it still matches',
+    isCompletedHeading('Done', ['', 'done']) === true);
+  // The list is ordered and a prefix must not shadow a longer sibling.
+  check('a shorter word before a longer one does not shadow it',
+    isCompletedHeading('Completed', ['complete', 'completed']) === true,
+    'the boundary check continues the loop rather than returning false');
+}
+
+// -------------- 15. every verdict by name, and the ladder that orders them
+
+/**
+ * Until this phase, `test/smoke.mjs` asserted that verdicts were WELL-FORMED
+ * and named exactly two of them: the call-form pair pinned CODE and
+ * COMMENT-ONLY. Everything below CODE and every path verdict was caught only
+ * by diffing `--json` against real repos by hand, which is a step that happens
+ * when someone remembers.
+ *
+ * The fixture is separate from the shared one on purpose. The verdicts here
+ * are the assertion, so the corpus that produces them has to be readable in
+ * one screen — and the shared fixture is also counted by the `counts` phase,
+ * which would make every added entry here a change there.
+ *
+ * The ladder is asserted through the HIT COUNTS as well as the label, because
+ * the label alone cannot tell "code wins over comment" from "there was only
+ * ever a code hit". `tierBoth` carries both and must read CODE; `tierCommentDoc`
+ * carries both of its own and must read COMMENT-ONLY.
+ */
+function buildVerdictFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'todokeeper-verdict-'));
+  const put = (p, body) => {
+    mkdirSync(join(root, dirname(p)), { recursive: true });
+    writeFileSync(join(root, p), body);
+  };
+
+  put('src/live.ts', [
+    'export function tierCode(n) { return n + 1; }',
+    'export const useIt = tierCode(1);',
+    'export function tierBoth(n) { return n; }',
+    'export const alsoUseIt = tierBoth(2);',
+    '',
+  ].join('\n'));
+  put('src/tomb.ts', [
+    '// tierComment went away with the old pipeline.',
+    '// tierBoth used to live here too, before it moved.',
+    '// tierCommentDoc was removed in the same pass.',
+    'export const nothing = 1;',
+    '',
+  ].join('\n'));
+  put('docs/notes.md', [
+    '# notes',
+    'The `tierDoc` helper is described here and nowhere else.',
+    '`tierCommentDoc` is also written up here.',
+    '',
+  ].join('\n'));
+  put('excluded/thing.ts', 'export const hidden = 1;\n');
+
+  // `ignore` REPLACES the defaults, so they are restated; `excluded` is this
+  // fixture's addition and is what makes one referent PATH-NOT-SCANNED.
+  put('.todokeeper.json', `${JSON.stringify({
+    ignore: [...DEFAULTS.ignore, 'excluded'],
+  }, null, 2)}\n`);
+
+  put('TODOS.md', [
+    '# TODOS',
+    '',
+    '## Open',
+    '',
+    '- **code** — `tierCode` is called in source.',
+    '- **comment** — `tierComment` survives only as a tombstone.',
+    '- **doc** — `tierDoc` appears only in prose.',
+    '- **absent** — `tierAbsent` is nowhere at all.',
+    '- **code beats comment** — `tierBoth` is in both.',
+    '- **comment beats doc** — `tierCommentDoc` is in both.',
+    '- **path exists** — `src/live.ts` is here.',
+    '- **path missing** — `src/nope.ts` is not.',
+    '- **path excluded** — `excluded/thing.ts` is ignored by config.',
+    '- **a directory** — `docs` exists.',
+    '',
+  ].join('\n'));
+  return root;
+}
+
+function testEveryVerdict() {
+  const root = buildVerdictFixture();
+  try {
+    const out = execFileSync('node', [join(SCRIPTS, 'dead.mjs'), '--root', root, '--json'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const by = new Map(JSON.parse(out).referents.map((r) => [r.raw, r]));
+
+    const want = [
+      ['tierCode', 'CODE', 'called in source'],
+      ['tierComment', 'COMMENT-ONLY', 'a tombstone comment and nothing else'],
+      ['tierDoc', 'DOC-ONLY', 'prose only'],
+      ['tierAbsent', 'ABSENT', 'nowhere in the repo'],
+      ['tierBoth', 'CODE', 'code outranks a comment'],
+      ['tierCommentDoc', 'COMMENT-ONLY', 'a comment outranks prose'],
+      ['src/live.ts', 'PATH-EXISTS', 'a file that is there'],
+      ['src/nope.ts', 'PATH-MISSING', 'a file that is not'],
+      ['excluded/thing.ts', 'PATH-NOT-SCANNED', 'excluded by config, not absent'],
+      ['docs', 'PATH-EXISTS', 'a directory counts as present'],
+    ];
+    for (const [raw, verdict, why] of want) {
+      const r = by.get(raw);
+      check(`\`${raw}\` reads ${verdict} — ${why}`,
+        r && r.verdict === verdict, `got ${r ? r.verdict : 'no such referent'}`);
+    }
+
+    // The ladder, through the counts. Without these the two precedence rows
+    // above are satisfied by a tool that never found the losing hit at all.
+    const both = by.get('tierBoth');
+    check('code beats comment with BOTH hits present, not because the comment was missed',
+      both && both.codeHits > 0 && both.commentHits > 0,
+      `code=${both && both.codeHits} comment=${both && both.commentHits}`);
+    const cd = by.get('tierCommentDoc');
+    check('a comment beats prose with BOTH hits present',
+      cd && cd.codeHits === 0 && cd.commentHits > 0 && cd.docHits > 0,
+      `code=${cd && cd.codeHits} comment=${cd && cd.commentHits} doc=${cd && cd.docHits}`);
+
+    // ABSENT has to mean what it says, or it is DOC-ONLY wearing another name —
+    // which is exactly the shape the relative-root defect produced.
+    const absent = by.get('tierAbsent');
+    check('ABSENT carries no hit of any kind',
+      absent && absent.codeHits === 0 && absent.commentHits === 0
+      && absent.docHits === 0 && absent.hits.length === 0,
+      `got ${absent ? JSON.stringify(absent.hits) : 'no such referent'}`);
+
+    // Excluded-by-config and absent-from-the-repo are different facts and the
+    // report has to carry which one it is — an operator acts on the difference.
+    const skipped = by.get('excluded/thing.ts');
+    check('PATH-NOT-SCANNED names the entry that excluded it and where it came from',
+      skipped && skipped.ignoredBy === 'excluded' && skipped.ignoredBySource === 'config',
+      `got ignoredBy=${skipped && skipped.ignoredBy} source=${skipped && skipped.ignoredBySource}`);
+    check('...and it did NOT resolve, which is why it is not PATH-EXISTS',
+      skipped && skipped.resolved === null,
+      `got resolved=${skipped && JSON.stringify(skipped.resolved)}`);
+
+    // A missing path must not borrow the excluded one's provenance.
+    const missing = by.get('src/nope.ts');
+    check('PATH-MISSING is not marked ignored',
+      missing && !missing.ignored && !missing.ignoredBy,
+      `got ignored=${missing && missing.ignored} by=${missing && missing.ignoredBy}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// ------- 16. a root BELOW the work tree's toplevel takes the walk as well
+
+/**
+ * `gitEnumerate` returns null — and the plain walk runs — on five conditions.
+ * Phase 9 covers one: a root with no `.git` anywhere above it. This covers the
+ * second, and it is the one worth having, because it is reachable by an
+ * ordinary `--root web` on a monorepo and because its absence is the least
+ * visible: the walk still produces a report that reads as complete.
+ *
+ * The other three are still uncovered and deliberately so — a missing git
+ * binary needs a doctored PATH, a listing past `GIT_LIST_BUFFER` needs roughly
+ * 800,000 files, and "any other git failure" needs a fault injector.
+ *
+ * The assertion that matters is not the mode string, it is the VERDICT: the
+ * same referent in the same tree reads PATH-NOT-SCANNED from the toplevel and
+ * PATH-EXISTS from the subdirectory, because `.gitignore` is consulted in one
+ * and not the other. A test that only checked `mode` would pass against a tool
+ * that reported the mode honestly and then ignored it.
+ */
+function buildMonorepoFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'todokeeper-mono-'));
+  const put = (p, body) => {
+    mkdirSync(join(root, dirname(p)), { recursive: true });
+    writeFileSync(join(root, p), body);
+  };
+
+  put('web/src/app.ts', 'export function liveThing() { return 1; }\n');
+  // `generated` is NOT one of the shipped `ignore` names, deliberately: a
+  // default-ignored directory would be excluded in BOTH modes and the contrast
+  // would prove nothing about enumeration.
+  put('web/.gitignore', 'generated/\n');
+  put('web/generated/stale.md', 'liveThing was written up here.\n');
+
+  const todos = [
+    '# TODOS',
+    '',
+    '## Open',
+    '',
+    '- **A gitignored doc** — `generated/stale.md` is generated.',
+    '',
+  ].join('\n');
+  put('web/TODOS.md', todos);
+  // The same referent, root-relative to each root, so the two runs are asking
+  // the identical question of the identical file.
+  put('TODOS.md', todos.replace('generated/stale.md', 'web/generated/stale.md'));
+
+  const git = (...args) => execFileSync('git', args, { cwd: root, stdio: 'pipe' });
+  git('init', '-q');
+  git('config', 'user.email', 'smoke@example.invalid');
+  git('config', 'user.name', 'smoke');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'fixture');
+  return root;
+}
+
+function testBelowToplevelFallback() {
+  const root = buildMonorepoFixture();
+  const web = join(root, 'web');
+  try {
+    const config = loadConfig(web);
+    const below = buildFileIndex(web, config.ignore);
+    check('a root below the work tree toplevel falls back to the walk',
+      below.mode === 'walk', `got ${JSON.stringify(below.mode)}`);
+
+    // The control. Without it this phase passes on a fixture whose git init
+    // silently failed, which would take the SAME branch for the wrong reason.
+    const top = buildFileIndex(root, loadConfig(root).ignore);
+    check('...while the toplevel of the same tree enumerates with git',
+      top.mode === 'git', `got ${JSON.stringify(top.mode)}`);
+
+    const verdictFrom = (r) => {
+      const out = execFileSync('node', [join(SCRIPTS, 'dead.mjs'), '--root', r, '--json'],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      return JSON.parse(out).referents[0];
+    };
+    const fromTop = verdictFrom(root);
+    const fromWeb = verdictFrom(web);
+    check('from the toplevel the gitignored file reads PATH-NOT-SCANNED',
+      fromTop && fromTop.verdict === 'PATH-NOT-SCANNED',
+      `got ${fromTop ? fromTop.verdict : 'no referent'}`);
+    check('from the subdirectory the SAME file reads PATH-EXISTS',
+      fromWeb && fromWeb.verdict === 'PATH-EXISTS',
+      `got ${fromWeb ? fromWeb.verdict : 'no referent'}`);
+    check('...so the enumeration mode changes the answer, not just the banner',
+      fromTop && fromWeb && fromTop.verdict !== fromWeb.verdict,
+      'if these ever agree, one of the two modes stopped doing its job');
+
+    // A downgrade nobody is told about reads as coverage. This asserts that the
+    // report says a walk happened and that .gitignore went unconsulted — both
+    // true here. It does NOT assert the sentence's stated REASON, which is
+    // "this root is not a git work tree" and is false on this branch; that is
+    // filed in TODOS.md rather than pinned here, because a test that fixes a
+    // wrong sentence in place has to be deleted to fix it.
+    const text = execFileSync('node', [join(SCRIPTS, 'dead.mjs'), '--root', web],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    check('the downgrade is announced from a subdirectory root too',
+      text.includes('directory walk') && text.includes('.gitignore was'),
+      'the walk was chosen for a different reason here, and it must still say so');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 // -------------------------------------------------------------------- driver
 
 let root;
@@ -1739,6 +2146,9 @@ try {
     ['entries-generator', testEntriesGenerator],
     ['silent-skips', testSilentSkipsAnnounced],
     ['relative-root', testRelativeRootParity],
+    ['parsing-rules', testParsingRules],
+    ['every-verdict', testEveryVerdict],
+    ['below-toplevel', testBelowToplevelFallback],
   ]) {
     try {
       phase(root);

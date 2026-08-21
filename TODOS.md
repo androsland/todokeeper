@@ -225,21 +225,13 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   when the regex went away and are exercised only by hand.
   (2026-08-16, revised 2026-08-17)
 
-- **`test/smoke.mjs` covers the branches, and exactly two answers.** It executes
-  every `classifyReferent` branch and runs all four scripts end to end against a
-  fixture, which is what a rename that broke the glob branch needed and did not
-  have. The call-form phase added the first assertions that a verdict is
-  CORRECT rather than merely well-formed: a live call reads CODE, a tombstoned
-  one reads COMMENT-ONLY. Measured with the mutation this entry used to name —
-  reclassifying both symbol returns as prose — the suite now fails 7 checks
-  against 4 before, and 3 of that 4 were collateral, tripping only because the
-  report empties. Every other verdict is still shape-checked only, so the tier
-  ladder below CODE and every path verdict are caught only by diffing `--json`
-  against real repos by hand, which is the step this entry has not yet
-  replaced.
-  It also skips both count caps deliberately — reaching them costs 8.2s and 39s,
-  which is a benchmark, not a smoke test, so nothing would notice if a cap were
-  deleted. (2026-08-16, narrowed 2026-08-17, narrowed 2026-08-19)
+- **Neither count cap is exercised, and nothing would notice if one were
+  deleted.** `test/smoke.mjs` skips both deliberately: reaching them costs 8.2s
+  and 39s, which is a benchmark rather than a smoke test. Every verdict is now
+  asserted by name (see `## Completed`), so this is the largest remaining gap
+  between what the suite checks and what the tool promises — and it is a
+  deliberate one, not an oversight.
+  (2026-08-16, narrowed 2026-08-17, narrowed 2026-08-19, narrowed 2026-08-21)
 
 - **Phase B's oracle has a branch no configuration can reach.**
   `isEntryStartOracle` tests `entryStyles.includes('bold')`, but the style is
@@ -357,14 +349,6 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   the retired regex behaved identically, so it is a standing limit rather than a
   regression. A fix needs a negative list or a second word check; neither has
   been designed, and the error understates live work rather than hiding it.
-  (2026-08-17)
-
-- **`isEntryStart` and `isCompletedHeading` are covered by a throwaway script,
-  not a test.** 26 cases were run by hand against both, including a parity check
-  against the regex they replaced across 15 headings. Nothing in the repo
-  re-runs them, so the next edit to either has no net. Folds into the "nothing
-  tests the scripts" entry above; noted separately because these two are now the
-  only thing standing between a config and a misparse.
   (2026-08-17)
 
 - **Containment refuses a legitimate setup.** A repo that deliberately symlinks
@@ -535,15 +519,24 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   repo with 40 dropped symlinks is told about 20 of them in a report that
   otherwise promises to say when it stopped early.
 
-- **Only one of the five fallback branches is tested.** (found fixing the
-  gitignore defect, 2026-08-19) `gitEnumerate` returns null — and the plain walk
-  runs — on a non-git root, a missing git binary, a root below the work tree's
-  toplevel, a listing past `GIT_LIST_BUFFER`, and any other git failure.
-  `test/smoke.mjs` exercises the first only. The toplevel one is the one worth
-  covering: it is reachable by an ordinary `--root web` on a monorepo, and it is
-  the branch whose absence would be least visible, because the walk still
-  produces a plausible-looking report. The other three need a doctored PATH, an
-  800,000-file fixture and a fault injector respectively, and are not worth it.
+- **The walk announcement states a reason that is false on one of its five
+  branches.** (found covering the below-toplevel branch, 2026-08-21)
+  `index.mode` is a bare `'git' | 'walk'` and carries no reason, so both
+  `dead.mjs` and `stale.mjs` print the same sentence whichever of the five
+  conditions selected the walk: *"this root is not a git work tree, so
+  .gitignore was NOT consulted"*. On a root BELOW a work tree's toplevel — an
+  ordinary `--root web` on a monorepo — the second half is true and the first
+  half is not: the root is squarely inside a work tree. An operator who reads
+  it and concludes the directory is not under version control has been told
+  something untrue by a tool whose whole job is to be believed about what it
+  did and did not look at. The consequence is not hypothetical: from the
+  toplevel a gitignored file reads PATH-NOT-SCANNED and from the subdirectory
+  the same file reads PATH-EXISTS, so the sentence is the only thing explaining
+  a changed verdict. The fix is to carry the reason on the index and print the
+  one that applies; the suite covers the two reachable branches already, so the
+  cost is the wording and the plumbing, not new coverage. Deliberately NOT
+  pinned by a test in its current form — a test that fixes a wrong sentence in
+  place has to be deleted to fix it.
 
 - **`gitIgnoringPrefix` only knows about ignored paths that exist on disk.**
   (found fixing the gitignore defect, 2026-08-19) The ignored set comes from
@@ -588,6 +581,49 @@ saying it was has been removed rather than left to read as current. The next
 cut is blocked on a different fact: `## Completed` has no entries for the work
 merged as PRs #6 and #7, and archiving a stale section keeps five older entries
 while archiving the recent ones. Write those two first, then split.
+
+- **The suite asserts answers now, not shapes — and the first draft of the
+  table proved nothing.** Three gaps closed together: the two parsing rules
+  (`isEntryStart`, `isCompletedHeading`) had been checked only by 26 hand-run
+  cases in a throwaway script; every verdict below CODE and every path verdict
+  was shape-checked only; and one of `gitEnumerate`'s five fallback branches
+  was covered. Suite 241 to 332 checks.
+
+  The parsing table was derived from the rules rather than from current output
+  and passed 64 cases on the first run, which is also what a vacuous table
+  looks like — so it was mutation-tested, and **two of eight mutations
+  survived**. `Not completed` does NOT prove the completed-heading match is
+  anchored, and `Open` does NOT prove the empty-word guard exists: the boundary
+  check reads `text[w.length]`, an index that assumes the word starts at 0, so
+  for a word found later it lands inside that word and rejects by accident. The
+  cases that discriminate are the ones where that index falls on a space —
+  `Work done` and `Features complete`, both headings a real repo would write,
+  both of which flip to completed the moment the match is unanchored. The
+  empty-word guard needs a heading whose first character is not a letter
+  (a tick), for the same reason. A third survivor: `Recently recently done`
+  cannot prove only ONE qualifier is stripped, because the loop never revisits
+  an earlier qualifier — it takes two DIFFERENT ones in list order. **The
+  lesson generalises past this table: a case chosen because it reads like the
+  bug is not the same as a case that discriminates against it, and only the
+  mutation tells them apart.** After the fixes, all eight are caught: unanchor
+  2, empty-word guard 1, qualifier whitespace 1, single-qualifier break 2,
+  blockquote strip 4, nine-digit ordinal cap 1, word boundary 4, indent depth 6.
+
+  The verdict phase asserts all four symbol tiers, all three path verdicts and
+  the two precedence rules, and asserts the LOSING hit is present as well —
+  a label alone cannot tell "code outranks a comment" from "the comment was
+  never found". Mutations: collapsing DOC-ONLY into ABSENT fails 1, inverting
+  the comment/doc ladder 2, reporting an excluded path as missing 4.
+
+  The below-toplevel branch is asserted through the verdict it CHANGES, not
+  through the mode string: the same gitignored file in the same tree reads
+  PATH-NOT-SCANNED from the toplevel and PATH-EXISTS from the subdirectory,
+  with a toplevel control so the phase cannot pass on a fixture whose `git
+  init` silently failed. Dropping the guard fails 4. Covering it surfaced a
+  separate finding about the announcement's wording, filed under
+  `## Enumeration`. The suite header's two now-stale non-goals were rewritten
+  in the same pass — an understated limit reads as a claim of coverage just as
+  a missing one does. (2026-08-21)
 
 - **A relative `--root` made `ABSENT` unreachable, and the suite could not see
   it because every fixture passed an absolute one.** `--root` was used verbatim
