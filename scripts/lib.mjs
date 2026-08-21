@@ -858,6 +858,56 @@ export function loadConfigOrExit(root) {
 
 /* -------------------------------------------------------------------- repo */
 
+/**
+ * The root to audit, taken from `--root` and made ABSOLUTE, or the enclosing
+ * repo when the flag is absent.
+ *
+ * The `resolve()` is the whole point and it is not cosmetic. Two path families
+ * meet inside this tool: `resolveTargets` builds its answers with
+ * `join(root, target)`, so they inherit whatever shape `root` had, while
+ * `listFiles` always returns absolute paths. `repoRoot()` returns absolute in
+ * both of its branches, so the families matched for every caller that let it
+ * decide — and diverged for every caller that passed `--root` a relative path.
+ *
+ * Measured, with the deferred-work file naming a symbol that exists nowhere:
+ * `--root <abs>` answered ABSENT, `--root .` answered DOC-ONLY. The comparison
+ * that failed is `dead.mjs`'s one-line filter dropping the target file from
+ * the corpus — "the deferred-work file names everything; it proves nothing" —
+ * so with a relative root every referent scored a free doc hit from its own
+ * entry and ABSENT became unreachable. `dead.mjs` exists to find dead
+ * referents; ABSENT is its answer, and `--root .` is the obvious way to ask.
+ *
+ * It lives here rather than in the three scripts because it is one line
+ * repeated three times, which is the shape this repo has already shipped a bug
+ * in: a fix applied to two of three call sites reads as a fix.
+ *
+ * NOT `repoRoot(value)`, which would resolve `--root web` on a monorepo up to
+ * the git toplevel and audit the wrong tree. This makes the path absolute; it
+ * does not change which directory was named. It is also NOT `realpathSync` —
+ * `contained()` realpaths both of its own operands, so a symlinked root keeps
+ * working, and resolving links here would silently rewrite the root an
+ * operator asked for in every report that echoes it back.
+ *
+ * The `OrExit` suffix is this file's existing cue for a function that can end
+ * the process — `loadConfigOrExit` wears it — and it is load-bearing here even
+ * though there is deliberately no exit-free sibling to pair with: the only
+ * consumers are the three CLI entry points and a suite that reaches all of
+ * them through `spawnSync`, so nothing today is killed by the exit. The name
+ * is what keeps that true for a future in-process caller, which would
+ * otherwise lose its whole process to a missing CLI argument.
+ * (forgeward security review, 2026-08-21)
+ */
+export function rootFromArgvOrExit(argv) {
+  const i = argv.indexOf('--root');
+  if (i === -1) return repoRoot();
+  const value = argv[i + 1];
+  if (value === undefined) {
+    process.stderr.write('todokeeper: --root needs a directory argument\n');
+    process.exit(2);
+  }
+  return resolve(value);
+}
+
 export function repoRoot(from = process.cwd()) {
   try {
     return execFileSync('git', ['rev-parse', '--show-toplevel'], {

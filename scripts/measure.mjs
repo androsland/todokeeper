@@ -33,15 +33,14 @@
  */
 
 import {
-  loadConfigOrExit, repoRoot, resolveTargets, sections, entries, rel, isCompletedHeading,
+  loadConfigOrExit, rootFromArgvOrExit, resolveTargets, sections, entries, rel, isCompletedHeading,
   readTargetMeta, warnIfHeadingless, safeField, jsonSafe, writeStdout,
   isLeadMarkedDone, leadMarkersFor,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
 const asJson = argv.includes('--json');
-const rootArg = argv.indexOf('--root');
-const root = rootArg !== -1 ? argv[rootArg + 1] : repoRoot();
+const root = rootFromArgvOrExit(argv);
 
 const config = loadConfigOrExit(root);
 const targets = resolveTargets(root, config);

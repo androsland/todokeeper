@@ -65,7 +65,7 @@
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, lstatSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, lstatSync, statSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1600,6 +1600,118 @@ function testSilentSkipsAnnounced() {
   }
 }
 
+// ------------------- 13. a relative `--root` answers the same as an absolute
+
+/**
+ * `--root` used to be taken verbatim, and `resolveTargets` builds its answers
+ * with `join(root, target)` while `listFiles` always returns absolute paths.
+ * So a relative `--root` put the two path families out of alignment and
+ * `dead.mjs`'s one-line filter — "the deferred-work file names everything; it
+ * proves nothing" — stopped matching. Every referent then scored a free doc
+ * hit from its own entry, and ABSENT, the verdict `dead.mjs` exists to
+ * produce, became unreachable.
+ *
+ * Asserted as PARITY between the two invocations rather than as a list of
+ * expected verdicts, because the defect was never in one verdict: it was the
+ * corpus differing underneath all of them. A parity check fails on whichever
+ * verdict a future misalignment happens to move. The one named assertion
+ * beside it is ABSENT, because that is the verdict that went missing and a
+ * parity check alone is satisfied by two runs that are equally wrong.
+ */
+function testRelativeRootParity() {
+  const root = mkdtempSync(join(tmpdir(), 'todokeeper-root-'));
+  try {
+    const put = (p, body) => {
+      mkdirSync(join(root, dirname(p)), { recursive: true });
+      writeFileSync(join(root, p), body);
+    };
+    put('src/app.ts', 'export function liveThing() { return 1; }\n// deadThing was removed\n');
+    put('docs/notes.md', 'The `prosedThing` is described here only.\n');
+    put('TODOS.md', [
+      '# TODOS',
+      '',
+      '## Open',
+      '',
+      '- **A live symbol** — `liveThing` is called.',
+      '- **A tombstoned symbol** — `deadThing` is gone.',
+      '- **A prose-only symbol** — `prosedThing` appears in docs.',
+      '- **A symbol nowhere at all** — `neverThing` does not exist.',
+      '- **A path that exists** — `src/app.ts` is here.',
+      '- **A path that does not** — `src/gone.ts` is not.',
+      '',
+    ].join('\n'));
+
+    // A real repo, because the alternative this rejects — `repoRoot(value)` —
+    // only differs from `resolve(value)` INSIDE a work tree: outside one,
+    // `repoRoot` falls back to `resolve(from)` and the two are the same
+    // function. On a bare temp directory the subdirectory assertion below
+    // would pass against the very design it exists to rule out.
+    const git = (...args) => execFileSync('git', args, { cwd: root, stdio: 'pipe' });
+    git('init', '-q');
+    git('config', 'user.email', 'smoke@example.invalid');
+    git('config', 'user.name', 'smoke');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'fixture');
+
+    const run = (args, cwd) => JSON.parse(execFileSync(
+      'node', [join(SCRIPTS, 'dead.mjs'), '--json', ...args],
+      { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    ));
+    const verdicts = (r) => r.referents.map((x) => `${x.needle}=${x.verdict}`).sort().join(' ');
+
+    const abs = run(['--root', root], undefined);
+    const dot = run(['--root', '.'], root);
+
+    check('a relative --root gives the same verdicts as an absolute one',
+      verdicts(abs) === verdicts(dot),
+      `absolute: ${verdicts(abs)}\n      relative: ${verdicts(dot)}`);
+
+    // The verdict that actually went missing. Without this, two equally-wrong
+    // runs satisfy the parity check above.
+    check('...and a symbol that occurs nowhere reads ABSENT, not DOC-ONLY',
+      dot.referents.find((x) => x.needle === 'neverThing')?.verdict === 'ABSENT',
+      `got ${JSON.stringify(dot.referents.find((x) => x.needle === 'neverThing')?.verdict)}`);
+
+    // The mechanism, asserted directly: the deferred-work file must not be in
+    // the scanned corpus, or every referent it names scores a free doc hit.
+    const hitPaths = (r) => r.referents.flatMap((x) => (x.hits || []).map((h) => h.path));
+    check('...because the deferred-work file is not scanned for referents',
+      !hitPaths(dot).includes('TODOS.md') && !hitPaths(abs).includes('TODOS.md'),
+      `got ${JSON.stringify(hitPaths(dot))}`);
+
+    // A relative root must not resolve UP to the enclosing work tree. `--root
+    // web` on a monorepo means `web`, and `repoRoot(value)` would have audited
+    // the whole repo while reporting the subdirectory's name — the failure
+    // being that it reports a PASS-shaped answer for the wrong corpus.
+    mkdirSync(join(root, 'sub'));
+    const sub = spawnSync('node', [join(SCRIPTS, 'measure.mjs'), '--root', 'sub'],
+      { cwd: root, encoding: 'utf8' });
+    check('a relative --root names that directory, not the enclosing repo',
+      sub.status === 2 && /no deferred-work file found/.test(sub.stderr + sub.stdout),
+      `status=${sub.status} stderr=${JSON.stringify(sub.stderr)}`);
+
+    // `resolve(undefined)` throws a TypeError, so the missing-value case had to
+    // be handled when the resolution was added rather than left to crash.
+    const bare = spawnSync('node', [join(SCRIPTS, 'dead.mjs'), '--root'],
+      { cwd: root, encoding: 'utf8' });
+    check('--root with no value exits 2 with one line, not a stack',
+      bare.status === 2 && bare.stderr.trim().split('\n').length === 1,
+      `status=${bare.status} stderr=${JSON.stringify(bare.stderr)}`);
+
+    // All three scripts share the one entry point, because a fix applied to
+    // two of three call sites reads exactly like a fix.
+    for (const script of ['dead.mjs', 'stale.mjs', 'measure.mjs']) {
+      const r = spawnSync('node', [join(SCRIPTS, script), '--root', '.', '--json'],
+        { cwd: root, encoding: 'utf8' });
+      check(`${script} accepts a relative --root and reports an absolute root`,
+        r.status === 0 && JSON.parse(r.stdout).root === realpathSync(root),
+        `status=${r.status} root=${JSON.stringify(r.stdout.slice(0, 120))}`);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 // -------------------------------------------------------------------- driver
 
 let root;
@@ -1626,6 +1738,7 @@ try {
     ['ignore-validation', testIgnoreValidation],
     ['entries-generator', testEntriesGenerator],
     ['silent-skips', testSilentSkipsAnnounced],
+    ['relative-root', testRelativeRootParity],
   ]) {
     try {
       phase(root);
