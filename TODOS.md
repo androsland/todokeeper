@@ -387,26 +387,23 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   (security review, 2026-08-17; widened 2026-08-17 when containment and
   regular-file checks joined the cap)
 
-- **The control-byte scan covers five files and runs only when someone runs it.**
-  `test/smoke.mjs` now asserts zero non-layout control bytes across the four
-  `scripts/*.mjs` and itself, which closes the case that kept biting. It sees
-  nothing else: `SKILL.md`, `README.md`, `.todokeeper.json` and any fixture are
-  outside the list, and a control byte in a skill file is exactly as invisible in
-  a diff view as one in source. Nor is anything wired to run the suite — no hook,
-  no CI, no pre-commit — so the scan protects only the edits made by someone who
-  runs `node test/smoke.mjs`. Widening the file list is trivial; wiring a trigger
-  is executable behaviour and gets its own change.
-  (self-review, 2026-08-17, narrowed the same day once the scan landed)
+- **The control-byte scan still runs only when someone runs it.**
+  (bundle 3, 2026-08-21) `testNoControlBytes` now reads the tracked tree and
+  catches bidi, but nothing invokes the suite — no hook, no CI, no pre-commit —
+  so it protects the edits of whoever remembers `node test/smoke.mjs`. Wiring a
+  trigger is executable behaviour and gets its own change; it is the one half of
+  the original entry that this bundle deliberately did not take.
 
-- **The control-byte scan is blind to the exact characters that landed in source
-  while it was being written.** `testNoControlBytes` covers C0-minus-layout, DEL
-  and C1. Bidi overrides (U+202A–U+202E, U+2066–2069) are *format* characters,
-  not control characters, so the scan does not see them — and four literal ones
-  went into `lib.mjs` during round 8, put there by the editing tool while writing
-  the regex that escapes them, and found by a hand-run scan rather than the
-  suite. `safeField` escapes them on OUTPUT; nothing checks for them in SOURCE.
-  Widening the scan is a one-line character-class change and was deliberately not
-  bundled with a security fix round. (self-review, 2026-08-17)
+- **The scanned character set matches `FIELD_UNSAFE`, which is narrower than
+  "invisible in a diff".** (bundle 3, 2026-08-21) The scan looks for
+  C0-minus-layout, DEL, C1, and the bidi overrides and isolates that `safeField`
+  escapes on output. Zero-width characters (U+200B–U+200D), the word joiner,
+  the LRM/RLM marks and the tag block (U+E0000–U+E007F) all pass, and any of
+  them is as invisible in a diff view as the four bidi characters that prompted
+  the widening. Matching the escaping helper was the deliberate choice — the two
+  sets agreeing is checkable, whereas "everything invisible" is a moving target
+  and would fire on legitimate text. Revisit if a case appears where an
+  unescaped format character reached a report.
 
 - **Nothing enforces `safeField` at a print sink that does not exist yet.**
   Every current single-line `console.log` in the four scripts routes through it —
@@ -581,6 +578,47 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
 The five most recent. Everything older moved to `TODOS-DONE.md` when this file
 crossed the 50,000-byte split threshold the tool itself reports; the constraints
 those entries still impose were lifted into `CLAUDE.md` on the way out.
+
+- **The control-byte scan read five files and could not see the characters that
+  put it there.** `testNoControlBytes` asserted over the four `scripts/*.mjs`
+  and `test/smoke.mjs` only, so a control byte in `skills/todokeeper/SKILL.md` —
+  a file an agent loads and follows — was exactly as invisible as one in source,
+  and so was one in `README.md`, `CLAUDE.md` or either TODOS file. It also
+  covered C0-minus-layout, DEL and C1 and nothing else, which excluded the bidi
+  overrides and isolates: those are *format* characters, no `b < 0x20` test sees
+  them, and four literal ones reached `lib.mjs` during round 8 — written by the
+  editing tool while the regex that escapes them was being composed, and found
+  by a hand-run scan rather than by the suite.
+
+  Both closed together. The file list is now `git ls-files` minus a DENY list of
+  binary extensions, so a `.md` or `.json` added tomorrow is scanned without
+  anyone editing the test, and a binary asset fails loudly rather than silently
+  going unscanned — the failure direction this repo wants. The character set is
+  now exactly `FIELD_UNSAFE`'s, U+202A–U+202E (E2 80 AA–AE) and U+2066–U+2069
+  (E2 81 A6–A9) included, so the SOURCE scan and the OUTPUT escaper agree by
+  construction. Falls back to the old five with a loud SKIP if `git ls-files`
+  does not run, because a narrowed scan that reports like a full one is the
+  failure the phase exists to prevent.
+
+  Verified: 180 -> 191 checks, the 11 new ones being the widened file list and
+  its count assertion. Mutation-tested by appending a literal U+202E to
+  `skills/todokeeper/SKILL.md` — the phase fails and names the file, which the
+  old list could not have done. The codepoint decoder was checked against all
+  four range endpoints (U+202A, U+202E, U+2066, U+2069). Two limits filed rather
+  than left implicit: nothing still triggers the suite, and the character set is
+  the escaper's rather than everything invisible.
+
+  The gate's security round found the deny-list test was accidentally rather
+  than deliberately correct: `f.slice(f.lastIndexOf('.'))` returns the
+  filename's LAST CHARACTER when there is no dot, so `LICENSE` compared as `E`,
+  and that only fails safe while no entry in `BINARY_EXTS` is one character
+  long. Extracted to `extensionOf`, which returns the empty string in that case;
+  checked against `LICENSE`, `Makefile`, `.gitignore`, `a.PNG` and a dotted
+  DIRECTORY path. A deny list has to fail toward scanning, so a comparison that
+  silently changes meaning on extensionless files is the wrong thing to leave
+  load-bearing.
+  (bundle 3, 2026-08-21; closes two self-review entries of 2026-08-17, and the
+  Low the gate raised on the first draft)
 
 - **The archive step in `skills/todokeeper/SKILL.md` told an agent to promote
   attacker-writable prose into the audited repo's standing-instructions file.**
