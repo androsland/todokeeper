@@ -29,17 +29,25 @@
  * letting it be read as the first is the bug this pair exists to close.
  *
  * Usage:
- *   node scripts/measure.mjs [--json] [--root <dir>]
+ *   node scripts/measure.mjs [--json] [--bodies] [--root <dir>]
+ *
+ * `--bodies` emits the full text of every LIVE entry through an escaping
+ * helper. It exists because the triage skill's step 2 reads entry prose
+ * straight out of the file and re-emits it into chat and a PR body, which is a
+ * sink none of these helpers covered — the skill could only tell the agent to
+ * strip non-printables by eye. Completed entries are excluded: triage is a
+ * question about open work, and the archive is the larger half of the bytes.
  */
 
 import {
   loadConfigOrExit, rootFromArgvOrExit, resolveTargets, sections, entries, rel, isCompletedHeading,
-  readTargetMeta, warnIfHeadingless, safeField, jsonSafe, writeStdout,
-  isLeadMarkedDone, leadMarkersFor,
+  readTargetMeta, warnIfHeadingless, safeField, safeBody, jsonSafe, writeStdout,
+  isLeadMarkedDone, leadMarkersFor, MAX_BODY_CHARS, MAX_BODY_TOTAL,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
 const asJson = argv.includes('--json');
+const wantBodies = argv.includes('--bodies');
 const root = rootFromArgvOrExit(argv);
 
 const config = loadConfigOrExit(root);
@@ -59,6 +67,13 @@ const files = [];
 // threshold verdict. stderr alone would leave a wrong number on stdout with
 // nothing beside it saying so.
 const skipped = [];
+
+// One budget across every target, spent in the order entries are read. Both
+// counters are reported even at zero when `--bodies` is on, for the same reason
+// `entries marked` is: a figure that appears only when non-zero cannot say zero.
+let bodyBudget = MAX_BODY_TOTAL;
+let bodiesTruncated = 0;
+let bodiesDropped = 0;
 
 // TWO SIZES, and which one answers which question is a decision, not an
 // accident. `readTargetMeta` collapses CRLF to LF, so the text measured here is
@@ -90,6 +105,7 @@ for (const abs of targets) {
   let inlineDone = 0;
   let markedLeads = 0;
   const inventory = [];
+  const fileBodies = [];
   const leadMarkers = leadMarkersFor(config);
 
   // A completed heading owns everything under it until a heading at the same or
@@ -117,6 +133,26 @@ for (const abs of targets) {
     for (const entry of entries(sec.body, config.entryStyles)) {
       sectionEntries += 1;
       if (isLeadMarkedDone(entry.text, leadMarkers)) marked += 1;
+      // Live entries only, and the two caps are applied in this order on
+      // purpose: the per-entry cap first, so one enormous entry cannot eat the
+      // whole run's budget and silently truncate every entry after it.
+      if (wantBodies && !inCompleted) {
+        const chars = entry.text.length;
+        let body = chars > MAX_BODY_CHARS ? entry.text.slice(0, MAX_BODY_CHARS) : entry.text;
+        if (body.length > bodyBudget) body = body.slice(0, bodyBudget);
+        bodyBudget -= body.length;
+        if (body.length < chars) {
+          if (body.length === 0) bodiesDropped += 1;
+          else bodiesTruncated += 1;
+        }
+        fileBodies.push({
+          heading: sec.heading ?? '(preamble)',
+          lead: entry.lead,
+          chars,
+          truncated: body.length < chars,
+          body,
+        });
+      }
     }
 
     if (inCompleted) {
@@ -159,7 +195,22 @@ for (const abs of targets) {
     // entry count. Naming them apart in the JSON is the point.
     entriesMarkedDone: markedLeads,
     sections: inventory,
+    // Absent rather than empty when the flag is off, so a consumer can tell
+    // "not asked for" from "asked for and there are none".
+    ...(wantBodies ? { bodies: fileBodies } : {}),
   });
+}
+
+// On stderr as well as in the report, because the two have different readers:
+// stderr reaches whoever ran the command, the report reaches whoever is handed
+// the output. Quoting a truncated body as though it were the entry is the
+// failure this line exists to prevent.
+if (wantBodies && (bodiesTruncated > 0 || bodiesDropped > 0)) {
+  console.error(
+    `todokeeper: ${bodiesTruncated} entry body/bodies truncated, ${bodiesDropped} omitted entirely `
+    + `(caps: ${MAX_BODY_CHARS} chars per entry, ${MAX_BODY_TOTAL} across the run). `
+    + 'The bodies below are not the whole entries; read the file for those.',
+  );
 }
 
 const totalBytes = files.reduce((n, f) => n + f.bytes, 0);
@@ -195,6 +246,18 @@ const verdict = {
   // Named, not counted: every figure in this object is incomplete by exactly
   // these files.
   skippedTargets: skipped,
+  // Present only under `--bodies`, and present at zero when nothing was cut —
+  // a consumer must be able to read "complete" as a stated fact rather than
+  // infer it from a missing field.
+  ...(wantBodies ? {
+    bodies: {
+      maxCharsPerEntry: MAX_BODY_CHARS,
+      maxCharsTotal: MAX_BODY_TOTAL,
+      truncated: bodiesTruncated,
+      omitted: bodiesDropped,
+      charsRemaining: bodyBudget,
+    },
+  } : {}),
 };
 
 if (asJson) {
@@ -262,4 +325,38 @@ if (verdict.crossed) {
   console.log('rounding error moves almost nothing and makes a stale section look maintained.');
 } else {
   console.log(`under threshold (${kb(config.splitThresholdBytes)} / ${config.splitThresholdBytes.toLocaleString()} B) — one file costs less than keeping two in sync.`);
+}
+
+// Last rather than first: this is bulk output the operator asked for by name,
+// and the measurement above is what the script is for.
+//
+// Non-goal, stated because the shape invites the assumption: the `===` line is
+// a READING aid, not a parsing boundary. An entry body may contain a line that
+// looks exactly like one, and nothing here escapes or renumbers it — a body is
+// quoted as written apart from the control and bidi characters `safeBody`
+// removes. Anything that needs an unforgeable boundary must read `--json`,
+// where the body is a string value and the structure is the serialiser's.
+if (wantBodies) {
+  const withBodies = files.filter((f) => f.bodies.length > 0);
+  const shown = withBodies.reduce((n, f) => n + f.bodies.length, 0);
+  console.log(`\nLIVE ENTRY BODIES (${shown} entries)`);
+  console.log('Completed sections are excluded. Control characters are stripped and CR and');
+  console.log('bidi controls are escaped, so what follows is safe to paste but is NOT the');
+  console.log('file byte-for-byte. Use --json when the exact bytes are what matter.');
+  if (bodiesTruncated > 0 || bodiesDropped > 0) {
+    console.log(`TRUNCATED: ${bodiesTruncated} body/bodies cut at a cap, ${bodiesDropped} omitted entirely.`);
+    console.log('A body marked [TRUNCATED] below is a fragment. Do not quote it as the entry.');
+  }
+  for (const f of withBodies) {
+    for (const b of f.bodies) {
+      const cut = b.truncated ? ' [TRUNCATED]' : '';
+      // Header and body in ONE template rather than two calls, because the
+      // suite's print-sink phase classifies `${...}` interpolations and does
+      // not look at a bare argument expression: `console.log(safeBody(x))`
+      // passes it unread, and so would `console.log(x)`. Written this way the
+      // body is a value the phase checks. See TODOS.md.
+      console.log(`\n=== ${safeField(f.path)} · ${safeField(b.heading)} · ${b.chars} chars${cut}\n${safeBody(b.body)}`);
+    }
+  }
+  if (shown === 0) console.log('(none — every entry is under a completed heading, or there are no entries)');
 }

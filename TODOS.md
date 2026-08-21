@@ -286,6 +286,20 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   re-measurement — the review read the scan as running to EOF, but a newline
   does break it, which is why wrapping the identical bytes is 165x cheaper)
 
+- **A print sink whose argument is a bare expression is not classified at all.**
+  Phase 17 reads `${...}` interpolations inside a print-sink call. An argument
+  that is not a template literal has none, so it is never looked at: measured by
+  mutation, replacing `console.log(\`${safeField(f.path)}\`)` with
+  `console.log(f.path)` — a repo-derived value at a print sink with no escaping
+  whatever — leaves the suite green at 382/382. One live instance exists today,
+  `console.log(safeBody(...))` having been folded into a template precisely to
+  avoid being a second: `measure.mjs:59` prints a `msg` built with `safeField`,
+  which is correct and unenforced. Fixing it means classifying the whole
+  argument when it holds no interpolation, which is a different traversal from
+  the one the phase does now, and the `msg` case shows the shape it has to
+  handle — a bare identifier resolving to a template built elsewhere.
+  (bundle 9, 2026-08-21)
+
 - **The two phase-17 allowlists have different key shapes, and only one of them
   goes stale loudly.** `KNOWN_UNESCAPED` is keyed `(file, expr)` and is backed
   by `unescaped.length === KNOWN_UNESCAPED.length`, so it fails both on a new
@@ -353,23 +367,6 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   hypothetical-referent detector did. Recording it because the gap is real, not
   because a scan is owed. Any fix that looks like a regex over entry text is the
   wrong one.
-
-- **Step 2's inert-quoting rule is advisory, and the deterministic version needs
-  the scripts to emit entry bodies.** (security review round 2, 2026-08-20) The
-  triage skill now tells the agent to strip or flag non-printable characters
-  before quoting entry text into chat or a PR body, and points at `--json` when
-  the exact bytes matter. That is a rule the agent applies by eye, not the
-  mechanical strip this repo's own constraint asks for — "send everything
-  human-readable through the escaping helpers" means `safeField` and the JSON
-  sinks, and Step 2's quoting reaches neither. The reason it cannot today is
-  concrete: the agent reads entry prose straight from the file because no script
-  emits an entry BODY — `dead.mjs` and `stale.mjs` emit leads and matched source
-  lines, `measure.mjs` emits sizes and headings. Routing the quote through an
-  escaped sink therefore means widening what the scripts print, which is a
-  `scripts/` change and belongs to its own PR. Detection here is a byte test
-  rather than an intent judgement, so unlike the classifier bets this repo has
-  lost, it is genuinely mechanisable — that is the argument for doing it rather
-  than declaring another non-goal.
 
 ## Untrusted input
 
@@ -463,13 +460,6 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   a dependency behind a zero-dependency suite. The backstop is that check 2 has
   no shape-based escape hatch: an expression nobody has classified fails.
   (bundle 7, 2026-08-21)
-
-- **`safe()` is now unused, and the phase that keeps it unused will have to be
-  relaxed by hand.** Check 3 fails on any `safe(` inside a print sink, on the
-  ground that this tool prints no multi-line body. `## Triage` below plans to
-  give it one. When that lands, the check has to be narrowed deliberately — to
-  the body sink and nothing else — rather than deleted, and there is nothing in
-  the suite that will remind whoever does it. (bundle 7, 2026-08-21)
 
 - **`stale.mjs` still classifies every referent occurrence, with no memoisation.**
   `dead.mjs` now caches `classifyReferent` on the raw string; `stale.mjs` calls
@@ -643,7 +633,7 @@ Everything older than these moved to `TODOS-DONE.md` when this file crossed the
 entries still impose were lifted into `CLAUDE.md` on the way out.
 
 This section was cut to the five most recent at that split and has grown back
-to fourteen since, so it is **not** "the five most recent" any more and the line
+to fifteen since, so it is **not** "the five most recent" any more and the line
 saying it was has been removed rather than left to read as current. Count it,
 do not increment it: this line said eleven while the file held twelve, because
 each sweep added one to the number it found written down instead of running
@@ -651,6 +641,39 @@ each sweep added one to the number it found written down instead of running
 cut is blocked on a different fact: `## Completed` has no entries for the work
 merged as PRs #6 and #7, and archiving a stale section keeps five older entries
 while archiving the recent ones. Write those two first, then split.
+
+- **Entry bodies now leave the tool through an escaping helper, and the helper
+  that was supposed to already cover them never did.** `measure.mjs --bodies`
+  prints the full text of every entry outside a completed heading, so the triage
+  skill's step 2 quotes from the tool instead of reading the file by eye. The
+  premise underneath it was false: `safeField`'s own docblock said `safe()`
+  "stays correct for a genuinely multi-line body", and `safe()` strips control
+  characters and does nothing to the bidi overrides, which are FORMAT characters
+  — a body could still reorder its own text on the way into a PR description.
+  So the body sink is a fourth helper, `safeBody`, stripping controls and
+  escaping CR and bidi while leaving newlines alone, and `jsonSafe` was widened
+  from `U+007F–U+009F` to cover the bidi ranges as well, verified lossless by
+  round-tripping `JSON.parse(jsonSafe(...))`.
+
+  The two output forms answer different questions and the suite now pins both:
+  the text report STRIPS what a terminal would act on, `--bodies --json` carries
+  the entry unmodified and escapes at the serialiser. Caps are
+  `MAX_BODY_CHARS` 32,000 per entry and `MAX_BODY_TOTAL` 4,000,000 across a run,
+  sized against the eight real `TODOS.md` files measured in the docblock beside them and exercised rather than trusted — a 4.3MB
+  fixture hits both in ~150ms, which is why they are tested where `dead.mjs`'s
+  byte caps (8.2s, 39s) are deliberately not. Truncation is announced on stderr
+  and in the report, per entry and in summary. Suite 363 → 382; ten mutations
+  run, ten caught.
+
+  Two predictions in the entries this replaces turned out wrong, in opposite
+  directions. Check 3 — "no print sink uses `safe()` where `safeField()` is
+  meant" — was expected to need relaxing to the body sink and did not: a
+  dedicated fourth helper sidesteps it, so the check stands unchanged and
+  `safe()` stays wrong at every print sink. Against that, adding the sink
+  exposed a hole in the phase that flags none of this, filed under Coverage
+  above: a print sink whose argument is a bare expression is never classified,
+  so the body emission is written as one template literal rather than two calls
+  in order to stay inside what the phase can see. (bundle 9, 2026-08-21)
 
 - **The suite now runs without being remembered.** Nothing invoked
   `node test/smoke.mjs` — no hook, no CI, no pre-commit — so every phase in it

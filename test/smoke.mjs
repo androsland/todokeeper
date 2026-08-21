@@ -87,6 +87,7 @@ import {
   DEFAULTS, classifyReferent, buildFileIndex, loadConfig, entries,
   MAX_ENTRIES as DEAD_ENTRY_CAP, MAX_FROM as DEAD_FROM_CAP,
   notedList, MAX_NOTED, isEntryStart, isCompletedHeading,
+  MAX_BODY_CHARS as BODY_CHAR_CAP, MAX_BODY_TOTAL as BODY_TOTAL_CAP,
 } from '../scripts/lib.mjs';
 
 const IGNORED_DIR = 'interview';
@@ -2302,7 +2303,7 @@ function interpolations(masked, from, to) {
   return out;
 }
 
-const ESCAPERS = ['safeField', 'jsonSafe', 'notedList'];
+const ESCAPERS = ['safeField', 'safeBody', 'jsonSafe', 'notedList'];
 
 /**
  * Which characters of an expression sit inside an escaping call.
@@ -2435,6 +2436,8 @@ const REVIEWED_NON_TEXT = new Map([
   ['f.inlineDoneMarkers', 'a count'],
   ['verdict.completedPercent', 'a percentage'],
   ['r.gapDays', 'a day count'],
+  ['shown', 'a reduce over per-file counts'],
+  ['b.chars', 'a character count'],
   ['totalLive', 'a reduce over per-file counts'],
   ['totalMarked', 'a reduce over per-file counts'],
   ['kb(f.diskBytes)', 'kb() formats a byte count'],
@@ -2640,6 +2643,175 @@ function checkFlushConvention(names) {
 let root;
 try {
   root = buildFixture();
+// --------------------- 18. the one sink that emits a multi-line entry body
+
+/**
+ * `measure.mjs --bodies`: the one sink that emits an entry BODY.
+ *
+ * Every other print sink in these scripts emits a single line — a lead, a
+ * heading, a matched source line — which is why `safeField` escapes CR, LF and
+ * tab: on a one-line report they are forgery. A body is the opposite case. Its
+ * line structure is the content, so the helper it needs strips controls and
+ * escapes bidi while leaving newlines alone, and that is a fourth helper
+ * (`safeBody`) rather than a reuse of `safe()`. The `safeField` docblock used
+ * to say `safe()` "stays correct for a genuinely multi-line body"; it never
+ * was, because bidi overrides are FORMAT characters and `safe()` does not touch
+ * them — a body could reorder its own text on the way to a PR description.
+ *
+ * The caps are exercised, not trusted, and both are cheap here for a reason
+ * `testCounts` above spells out for the caps it skips: this script's cost is
+ * one linear pass, so a 4.3MB fixture that exhausts the whole-run budget runs
+ * in ~150ms rather than the 8.2s and 39s that make `dead.mjs`'s byte caps a
+ * benchmark instead of a smoke test.
+ *
+ * What this does NOT cover. It does not check that the `===` delimiter is
+ * unforgeable, because it is not: a body containing a line that looks like one
+ * is quoted as written, and `--json` is the answer where the boundary has to
+ * hold — the phase asserts that the JSON form survives such a body, not that
+ * the text form disambiguates it. It says nothing about which entries lose out
+ * when the whole-run budget runs dry: the budget is spent in read order, so the
+ * set that gets truncated is arbitrary and only its SIZE is asserted. And it
+ * exercises `measure.mjs` alone — `dead.mjs` and `stale.mjs` still emit leads
+ * only, and nothing here would notice if one of them grew a body sink.
+ */
+function testEntryBodies() {
+  const root = mkdtempSync(join(tmpdir(), 'todokeeper-bodies-'));
+  try {
+    const BEL = String.fromCharCode(0x07);
+    const CSI = String.fromCharCode(0x9B);
+    const RLO = String.fromCharCode(0x202E);
+    const PDF = String.fromCharCode(0x202C);
+    // Three lines, so "newlines survive" is a claim about a body with more than
+    // one of them. The `===` run is deliberate: it is the text form's own
+    // delimiter, planted inside a body to pin down that the report does not
+    // pretend to disambiguate it and the JSON form does not need to.
+    const live = [
+      `- **Lead with ${RLO}bidi${PDF} and a bell${BEL}**`,
+      '  Second line of the body.',
+      `  Third line with ${CSI}2K erase and a === TODOS.md fake delimiter.`,
+    ].join('\n');
+    writeFileSync(join(root, 'TODOS.md'),
+      `# TODOS\n\n## Open\n\n${live}\n\n## Completed\n\n- **Archived.**\n  Must not appear.\n`);
+
+    const run = (...args) => execFileSync('node',
+      [join(SCRIPTS, 'measure.mjs'), '--root', root, ...args],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+
+    const plain = JSON.parse(run('--json'));
+    check('measure.mjs omits bodies entirely without --bodies',
+      plain.files[0].bodies === undefined && plain.verdict.bodies === undefined,
+      'absent and empty must be distinguishable');
+
+    const raw = run('--json', '--bodies');
+    const j = JSON.parse(raw);
+    const bodies = j.files[0].bodies;
+    check('measure.mjs emits one body per live entry', bodies.length === 1,
+      `got ${bodies.length}`);
+    // The archive is the larger half of a real file and triage is a question
+    // about open work, so this is a scoping decision rather than an omission.
+    check('measure.mjs excludes entries under a completed heading',
+      bodies.length === 1 && !bodies[0].body.includes('Must not appear'));
+
+    // The two sinks answer different questions, and that is the whole design:
+    // `--json` is LOSSLESS, escaping at the serialiser so the printed document
+    // is safe while the parsed value is the file; the text report is READABLE,
+    // stripping what a terminal would act on. Asserting both together is what
+    // stops one drifting into the other.
+    //
+    // Built from codepoints rather than written as a character class, because
+    // typing a control byte into source lands it in the file as a raw byte —
+    // four instances of exactly that shipped in this repo, and the phase above
+    // now fails on them.
+    const rawUnsafe = [...raw].filter((ch) => {
+      const c = ch.codePointAt(0);
+      return (c < 0x20 && c !== 0x0a) || (c >= 0x7f && c <= 0x9f)
+        || (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069);
+    });
+    check('the --json document carries no raw control or bidi byte',
+      rawUnsafe.length === 0,
+      `${rawUnsafe.length} found — the document is printed to a terminal before anyone parses it`);
+    check('the parsed --json body is the file, losslessly',
+      bodies[0].body === `${live}\n`,
+      'escaping at the serialiser must survive a round trip unchanged');
+
+    const text = run('--bodies');
+    const shown = text.slice(text.indexOf('LIVE ENTRY BODIES'));
+    check('the text body keeps its line structure',
+      shown.includes('\n  Second line of the body.\n  Third line with '),
+      'a body whose newlines were escaped would be one unreadable line');
+    check('the text body strips control characters',
+      !shown.includes(BEL) && !shown.includes(CSI),
+      'a bell or a CSI reaching a terminal is the point of the helper');
+    check('the text body escapes bidi rather than stripping it',
+      shown.includes('\\u202e') && shown.includes('\\u202c') && !shown.includes(RLO),
+      'a stripped override reads as clean text; an escaped one is visible');
+    check('the text body is otherwise verbatim',
+      shown.includes('=== TODOS.md fake delimiter'),
+      'quoting is the purpose — only controls and bidi may change');
+    check('bodies report complete when nothing was cut',
+      j.verdict.bodies.truncated === 0 && j.verdict.bodies.omitted === 0,
+      JSON.stringify(j.verdict.bodies));
+    check('the text report emits the body under a header',
+      shown.includes('LIVE ENTRY BODIES (1 entries)'));
+    check('the text report announces that it is not byte-for-byte',
+      shown.includes('NOT the'), 'an escaped quote presented as verbatim is a lie');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+
+  // Both caps in one fixture: 130 entries of 33,000 characters is over the
+  // per-entry cap on every entry AND over the whole-run budget partway through,
+  // so one run pins both numbers and the boundary between them.
+  const capRoot = mkdtempSync(join(tmpdir(), 'todokeeper-bodycaps-'));
+  try {
+    const filler = 'y'.repeat(33_000);
+    const parts = ['# TODOS', '', '## Open', ''];
+    for (let i = 0; i < 130; i += 1) parts.push(`- **E${i}**`, `  ${filler}`, '');
+    writeFileSync(join(capRoot, 'TODOS.md'), `${parts.join('\n')}\n`);
+
+    const proc = spawnSync('node',
+      [join(SCRIPTS, 'measure.mjs'), '--root', capRoot, '--json', '--bodies'],
+      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    const j = JSON.parse(proc.stdout);
+    const b = j.files[0].bodies;
+
+    check('no body exceeds the per-entry cap',
+      b.every((r) => r.body.length <= BODY_CHAR_CAP),
+      `longest ${Math.max(...b.map((r) => r.body.length))}`);
+    check('an over-cap body is flagged truncated',
+      b.every((r) => r.truncated) && b.every((r) => r.chars > BODY_CHAR_CAP),
+      'the flag is what stops a fragment being quoted as the entry');
+    check('the whole-run budget is spent and no further',
+      b.reduce((n, r) => n + r.body.length, 0) === BODY_TOTAL_CAP
+      && j.verdict.bodies.charsRemaining === 0);
+    // A record still exists for an entry the budget could not pay for: the
+    // alternative is a body that is simply absent, which reads as an entry that
+    // has none.
+    check('entries past the budget are recorded, not dropped',
+      b.length === 130 && j.verdict.bodies.omitted === b.filter((r) => r.body.length === 0).length
+      && j.verdict.bodies.omitted > 0,
+      `omitted=${j.verdict.bodies.omitted}`);
+    check('truncated and omitted partition the cut entries',
+      j.verdict.bodies.truncated + j.verdict.bodies.omitted === 130,
+      `${j.verdict.bodies.truncated} + ${j.verdict.bodies.omitted}`);
+    check('truncation is announced on stderr',
+      proc.stderr.includes('truncated') && proc.stderr.includes('omitted entirely'),
+      'stderr reaches whoever ran the command');
+
+    const text = spawnSync('node',
+      [join(SCRIPTS, 'measure.mjs'), '--root', capRoot, '--bodies'],
+      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    // Both, because they have different readers: the report is what gets handed
+    // on, and a partial scan that reports like a complete one is the one error
+    // this tool exists to prevent.
+    check('truncation is announced in the report as well',
+      text.stdout.includes('TRUNCATED:') && text.stdout.includes('[TRUNCATED]'),
+      'the summary line and the per-entry mark are both load-bearing');
+  } finally {
+    rmSync(capRoot, { recursive: true, force: true });
+  }
+}
+
   // Each phase is isolated so one throw reports as one failed phase rather than
   // truncating the run. The bug that prompted this file threw from the
   // classifier, and a suite that stops at the first throw would have reported
@@ -2665,6 +2837,7 @@ try {
     ['parsing-rules', testParsingRules],
     ['every-verdict', testEveryVerdict],
     ['below-toplevel', testBelowToplevelFallback],
+    ['entry-bodies', testEntryBodies],
     ['escaping-conventions', testEscapingConventions],
   ]) {
     try {

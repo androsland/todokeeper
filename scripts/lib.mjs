@@ -157,8 +157,59 @@ export function safeField(value) {
   );
 }
 
-/** The bytes `JSON.stringify` leaves raw: DEL and the whole C1 block. */
-const JSON_RAW_CONTROLS = /[\u007F-\u009F]/g;
+/**
+ * `safe()` for a value printed as a genuinely MULTI-LINE body.
+ *
+ * The docblock above says "`safe()` stays correct for a genuinely multi-line
+ * body, of which this tool currently prints none". The second half stopped
+ * being true when `measure.mjs --bodies` landed, and the first half was never
+ * true: `safe()` strips control characters and bidi controls are not control
+ * characters — that is stated four paragraphs up as the reason `safeField`
+ * carries them, and it applies identically here. A body is the WIDEST path in
+ * the tool, because it is repo prose reproduced verbatim rather than a
+ * filename or a lead, so shipping it through the one helper that lets U+202E
+ * past would have undone the reason bidi was added to `safeField` at all.
+ *
+ * Line structure is the whole point of a body, so LF survives, and so does tab,
+ * which is indentation inside a fenced block. CR does not: `readTarget`
+ * normalises CRLF at the read boundary, so a surviving lone CR is already
+ * anomalous, and it is the exact character the `safeField` docblock names as
+ * sufficient on its own to redraw a line the terminal has drawn.
+ *
+ * This is a THIRD escaping set rather than a parameter on `safeField`, because
+ * the two differ in what counts as layout and that is a judgement about the
+ * sink, not a flag. A caller choosing wrongly between them is the failure; a
+ * caller choosing between `true` and `false` is the same failure with less to
+ * read.
+ */
+const BODY_UNSAFE = /[\r\u202A-\u202E\u2066-\u2069]/g;
+
+export function safeBody(value) {
+  if (typeof value !== 'string') return value;
+  return safe(value).replace(
+    BODY_UNSAFE,
+    (c) => `\\u${c.codePointAt(0).toString(16).padStart(4, '0')}`,
+  );
+}
+
+/**
+ * What `JSON.stringify` leaves raw and this sink must not: DEL, the whole C1
+ * block, and the bidi overrides and isolates.
+ *
+ * The bidi half was added when `skills/next/SKILL.md` was found to tell the
+ * agent the opposite of the truth — "when the raw bytes are what matter, take
+ * them from `--json`, which escapes rather than strips", written two lines
+ * below a paragraph naming a bidi override inside an entry as the threat.
+ * Measured: `jsonSafe` emitted U+202E verbatim inside the string value, because
+ * a format character is neither C0 nor C1 and `JSON.stringify` has no opinion
+ * about it. The skill was pointing at the one sink that did not do the job.
+ *
+ * Escaping bidi here is lossless in the way that matters to this flag: a JSON
+ * parser decodes `\u202e` back to U+202E, so a consumer still recovers the
+ * repo's exact bytes, while an operator who dumps the output into a terminal
+ * sees six printable ASCII characters instead of a reordered line.
+ */
+const JSON_RAW_UNSAFE = /[\u007F-\u009F\u202A-\u202E\u2066-\u2069]/g;
 
 /**
  * The `--json` sink. `safe()` is the wrong tool here and the difference is the
@@ -178,8 +229,8 @@ const JSON_RAW_CONTROLS = /[\u007F-\u009F]/g;
  */
 export function jsonSafe(value) {
   return JSON.stringify(value, null, 2).replace(
-    JSON_RAW_CONTROLS,
-    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
+    JSON_RAW_UNSAFE,
+    (c) => `\\u${c.codePointAt(0).toString(16).padStart(4, '0')}`,
   );
 }
 
@@ -388,6 +439,46 @@ export const MANIFEST_CAP = 1_000_000;
  */
 export const MAX_REFERENTS = 5_000;
 export const MAX_ENTRIES = 5_000;
+
+/**
+ * The two BODY caps, which exist because `measure.mjs --bodies` is the first
+ * thing in this tool that emits repo prose VERBATIM rather than a lead, a
+ * filename or a count.
+ *
+ * Every other cap here bounds one file or one count. These bound a PRODUCT that
+ * nothing bounded before: entries times body length. `MAX_ENTRIES` caps the
+ * count at 5,000 and says nothing about size, and `measure.mjs` never imported
+ * it in the first place — it counts every entry in the file — so before this
+ * the only ceiling on total emitted body text was `TARGET_CAP`, which is 64MB
+ * PER TARGET and explicitly does not bound the set.
+ *
+ * Measured over the eight `TODOS.md` files on the machine this was written on,
+ * quoting the worst of each column rather than the convenient one — all three
+ * worsts are the same file, a 434KB target:
+ *  - Longest single entry: 16,170 characters. Then 15,010, 11,177, 10,284,
+ *    4,766, 3,876, 3,763, 1,068.
+ *  - Total body text in one file: 430,085 characters. Then 117,405, 78,699,
+ *    54,295, 47,173, 44,906, 26,407, 8,633.
+ *  - Entry count: 250. Then 69, 49, 31, 30, 29, 29, 16.
+ * So `MAX_BODY_CHARS` sits at 2.0x the longest entry observed anywhere, and
+ * `MAX_BODY_TOTAL` at 9.3x the largest total.
+ *
+ * What they deliberately do NOT do:
+ *  - They count UTF-16 code units, not bytes. A CJK or emoji body reaches the
+ *    same cap at up to four bytes per unit, so the byte ceiling these imply is
+ *    higher than the number reads — the same gap the heading-scan cap already
+ *    records, where non-ASCII cost ~40x more at an identical cap.
+ *  - They bound what is EMITTED, not what is parsed. `entries()` still
+ *    materialises every entry's `text` in full; these stop it reaching stdout
+ *    and stop the retained array growing, and neither is a memory guarantee
+ *    about the parse itself.
+ *  - `MAX_BODY_TOTAL` is a budget spent in entry order, so which entries get
+ *    truncated depends on where they sit in the file. That is arbitrary and is
+ *    the price of a bound that does not need a second pass; the announcement is
+ *    the remedy, on stderr AND in the report, as with every other cap here.
+ */
+export const MAX_BODY_CHARS = 32_000;
+export const MAX_BODY_TOTAL = 4_000_000;
 
 /**
  * The provenance cap, and the reason it is separate from the two above.
