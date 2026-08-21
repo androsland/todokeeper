@@ -31,6 +31,13 @@ falsified. The narrative, the numbers and the reversed decisions are in
   read will be missed too unless the check is written alongside it.
 - **Check a size cap before the read, never behind a `try/catch`.** A `catch`
   cannot catch an out-of-memory abort.
+- **Every referent handed to git is a pathspec, so `--literal-pathspecs` is
+  mandatory — and it is a GLOBAL option that must sit before the subcommand.**
+  Placed after it, git 2.34.1 exits `fatal: unrecognized argument`, which
+  `lastCommitTouching` catches and returns as `null`; the flag then silently
+  disables every commit lookup in the tool instead of failing loudly. Verify a
+  git-argument change in both directions, because the failing form looks like a
+  repo with no history.
 - **Send everything human-readable through the escaping helpers.** Headings, entry
   leads, matched source lines and git commit subjects all reach stdout, and a
   commit subject needs no edit to the deferred-work file at all. For an auditing

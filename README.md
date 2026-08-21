@@ -54,7 +54,30 @@ wrong by a factor of eight, and it was the argument for leaving the file alone.
 
 It also counts completions recorded *in place* (`✅`, `— SHIPPED`, `~~struck
 through~~`) outside any completed section, because a repo that never adopted a
-`## Completed` heading reads as 0% archive and isn't.
+`## Completed` heading reads as 0% archive and isn't. That lands as **two**
+figures rather than one, because it is two questions and they never converge:
+
+```
+  live entries    110
+  entries marked  0 of 110 live entries marked done on their LEAD line
+  inline done     32 marker(s) OUTSIDE any completed section
+```
+
+`entries marked` answers *how many of my open entries are actually closed?* It
+reads each entry's first line and nothing else. `inline done` answers *how much
+completion language does this file contain at all?* It counts marker
+**occurrences** anywhere in a section body. Those two numbers are from one real
+repo, and all 32 occurrences there are prose: a `**CLOSED <date>` on a
+continuation line inside a live entry, a struck sub-bullet under a live parent,
+and sentences quoting the marker strings. Reading 32 as an answer to the first
+question is the failure the per-entry count exists to remove — and widening the
+occurrence count's vocabulary to fix it makes it worse, not better, which is why
+[`leadDoneMarkers`](#configuration) is a separate key.
+
+**`entries marked 0` is an answer, not a defect.** A repo with a working
+`## Completed` heading and no in-place marking should read 0, and the report says
+so in words rather than omitting the line — a figure printed only when it is
+non-zero cannot say zero, because its absence reads as *not measured*.
 
 ### stale — the code moved, the note did not
 
@@ -95,11 +118,19 @@ heading. Otherwise, `.todokeeper.json` at the repo root:
   "targets": ["TODOS.md", "todos"],
   "splitThresholdBytes": 50000,
   "completedHeadings": ["completed", "done", "shipped", "archived"],
-  "inlineDoneMarkers": ["✅", "— SHIPPED", "~~", "[x]", "DONE:"],
+  "inlineDoneMarkers": ["✅", "— SHIPPED", "-- SHIPPED", "~~", "[x]", "DONE:"],
+  "leadDoneMarkers": null,
   "entryStyles": ["bullet"],
   "ignore": ["node_modules", "dist", "vendor"]
 }
 ```
+
+**A key given here REPLACES its default; it does not extend it.** The block
+above is an example, and `completedHeadings` and `ignore` in it are both
+deliberately shorter than what ships — copy those two lines and you get a
+narrower list, silently. `inlineDoneMarkers` above is the full shipped default,
+and it is written out precisely because the earlier five-item version of this
+block dropped `-- SHIPPED` from anyone who pasted it.
 
 `targets` takes files or directories; `ignore` takes literal names and
 repo-relative paths, never globs — see [what gets scanned](#what-gets-scanned).
@@ -109,6 +140,28 @@ an error rather than a silent no-op, and so is a value of the wrong type — a
 file as under the threshold. `completedHeadings` and `inlineDoneMarkers` hold at
 most 100 entries of at most 64 characters each; these are words, and the bound
 is [a real one](#limits-of-the-safety-checks).
+
+`leadDoneMarkers` is the vocabulary for the **per-entry** count only, and its
+default of `null` means *the same words as `inlineDoneMarkers`* — which is right
+for nearly every repo, so most never touch it. Set it when the two genuinely
+have to differ: a repo wanting `DONE:` counted anywhere in a checklist but only
+`**SHIPPED` counted at an entry's lead, or one needing a lead word the
+occurrence count should *not* learn. That second case is why the key exists at
+all. Measured on one repo, teaching the occurrence count four new words
+(`**CLOSED`, `**ANSWERED`, `**FIXED`, `**DONE`) took it from 32 to 46, where all
+14 new hits were prose and eleven sat inside the two entries describing the
+problem — improving one count must not be payable by degrading the other. It is
+a full replacement, not an addition; `[]` is legal and means never fire; and it
+carries the same 100 × 64 bounds when it is a list.
+
+Position, not vocabulary, is what makes the per-entry count different: the
+marker has to be on the entry's lead LINE, though not at its start. A
+start-anchored rule was measured and rejected — against 114 archived entries in
+one file it scored 17 where the shipped rule scores 27, and the ten it missed
+were that repo's ordinary form, `- **#80 — bolder job-type tints — SHIPPED`.
+Three of the six default markers are written as headline suffixes, so anchoring
+would have made half the default list a dead letter at the one position this
+looks at.
 
 **No key takes a regex, deliberately** — see [the safety limits](#limits-of-the-safety-checks).
 `completedHeadings` is a list of literal words matched case-insensitively at the
@@ -206,6 +259,20 @@ An unstated limit reads as a claim of coverage, so:
   false-positive rate is high by design.
 - **It does not expire anything.** A stale-but-open entry and a deliberately
   long-lived one are indistinguishable to every check here.
+- **The per-entry done count reads first lines and nothing else.** `entries
+  marked` cannot see an entry closed by editing its BODY while leaving the lead
+  alone, and it does not fire on a struck or marked SUB-bullet — a completed
+  child does not close its parent. Both fall out of the same rule: a lead is by
+  construction line 0 of an entry, and an entry never starts on a line indented
+  past one space. Widening either way is the occurrence count that already ships
+  beside it.
+- **A lead line that merely QUOTES a marker is counted as marked.** `- **Should
+  we adopt ~~this~~?**` reads as done. Measured across 316 live entries in 14
+  deferred-work files in 9 unrelated repos, none do — the only two leads that
+  fire are genuine completions recorded in place — but the error is in the
+  direction that hides work, which is why the figure is advisory and never moves
+  an entry out of `live entries`. A live entry led `- **HALF FIXED — ...` is the
+  shape to watch, and it is the reason the default vocabulary stays narrow.
 - **It does not fire below the threshold.** A 9KB file with a 30% archive is
   healthy. Splitting it makes two files to keep in sync and buys nothing.
 - **It cannot see an entry whose subject is prose.** `stale` and `dead` both work

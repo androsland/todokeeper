@@ -162,6 +162,58 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   reported percentage is taken over. Both are printed and labelled, which is the
   whole mitigation; nobody has argued the alternative assignment.
 
+## Completion counting
+
+- **The occurrence count counts prose, and widening its vocabulary makes that
+  worse rather than better.** `inlineDoneMarkers` counts marker SUBSTRINGS
+  anywhere in a section body, so a `**CLOSED <date>` on a continuation line, a
+  struck sub-bullet under a live parent and a sentence quoting the marker all
+  count. Measured against one repo's two target files at 110 live entries: 32
+  occurrences, 0 of them on an entry lead. The obvious repair — teaching that
+  list `**CLOSED`, `**ANSWERED`, `**FIXED` and `**DONE` — takes it 32 -> 46 while
+  the per-entry count stays at 0, which is arithmetic proof that all 14 new hits
+  are off-lead prose; eleven sit inside the two entries that describe this gap.
+  Shipped as a SECOND figure rather than a better word list, and the occurrence
+  count is byte-identical in behaviour because "how much completion language does
+  this file hold" is a real question. Nothing narrows it and nothing should.
+  (measured against androsland/techflow at b018700, 2026-08-21)
+
+- **The per-entry count errs in both directions and detects neither.** A lead
+  that merely QUOTES a marker is counted done — `- **Should we adopt ~~this~~?**`
+  — and an entry closed by editing its BODY while the lead stays as written is
+  invisible. The first is measured at zero across 316 live entries in 14
+  deferred-work files in 9 repos, the only two leads that fire being genuine
+  in-place completions; but a live `- **HALF FIXED — ...` exists in that corpus
+  and would fire the moment `**FIXED` entered the vocabulary, which is why the
+  default list stays narrow and widening is a per-repo key. The second is
+  structural: no scan of first lines can see it, and widening to the body is the
+  occurrence count that already ships. The figure is advisory for exactly this
+  reason and never moves an entry out of `live entries`. Detecting either needs
+  something this tool does not have — intent — so the mitigation is that both
+  numbers are printed and labelled, not that either is trusted.
+  (measured across 14 deferred-work files in 9 repos, 2026-08-21)
+
+- **`leadDoneMarkers` is unexercised: no repo has configured it.** Every marked
+  lead in the corpus is caught by the repo's existing `inlineDoneMarkers` list,
+  which is what the key defaults to reusing. The lever is demonstrated — one
+  repo's in-flight file marks 2 of 32 live entries under its own 8-word list, and
+  adding `**CLOSED` and `**ANSWERED` to `leadDoneMarkers` alone takes that to 6
+  of 111 across both its targets while the occurrence count stays at 34 — but
+  demonstrated in a scratch copy, not adopted anywhere. So the separation is
+  proven arithmetically and never yet load-bearing for a maintainer, and the
+  first repo to set the key is the first real test of whether two vocabularies
+  is a distinction anyone wants to maintain. (measured, 2026-08-21)
+
+- **`stale.mjs` and `dead.mjs` do not know an entry is marked done.** An entry
+  whose lead says `— SHIPPED` still draws a staleness verdict and still has its
+  referents chased, so a repo that records completions in place carries that
+  noise through both reports. `measure.mjs` is the only reader of
+  `leadDoneMarkers`. Deliberate for now: suppressing an entry from a report on
+  the strength of a marker is the judgement this tool refuses everywhere else,
+  and the quoted-marker false positive above would then hide a live entry rather
+  than merely mislabel a count. Revisit only against a repo where the noise is
+  measured, not on the theory that it exists. (decided, 2026-08-21)
+
 ## Coverage
 
 - **`entryStyles` names three shapes and a repo outside them cannot be
@@ -524,6 +576,49 @@ The five most recent. Everything older moved to `TODOS-DONE.md` when this file
 crossed the 50,000-byte split threshold the tool itself reports; the constraints
 those entries still impose were lifted into `CLAUDE.md` on the way out.
 
+- **`measure.mjs` answered "how many of my open entries are closed?" with a
+  count of substrings.** `inlineDoneMarkers` was `sec.body.split(m).length - 1`
+  over a whole section body, so continuation lines, struck sub-bullets and prose
+  quoting a marker all counted, while a repo that marks completions on the
+  ENTRY'S LEAD got no answer at all. The two numbers never converge. Measured
+  against one repo's two target files at 110 live entries: **32 occurrences and
+  0 marked leads.** The obvious repair was measured and REJECTED — adding
+  `**CLOSED`, `**ANSWERED`, `**FIXED`, `**DONE` to the occurrence list takes it
+  32 -> 46 with the marked-lead count still 0, so all 14 new hits are off-lead
+  prose and eleven are inside the two entries describing the gap. Widening an
+  occurrence counter's vocabulary makes it worse.
+
+  Shipped as a second figure, never a replacement: `isLeadMarkedDone` reads
+  `e.lines[0]` only, `measure` prints `entries marked N of M live entries`
+  alongside an `inline done` count whose behaviour and number are unchanged —
+  verified by a `--json` diff against `main` across 8 repos, identical once the
+  three new fields are stripped, and `dead`/`stale` byte-identical on 4. The
+  explainer PROSE under `inline done` did change, deliberately: it claimed
+  "completions recorded in place", which is false printed beside
+  `entries marked 0`. Position is the whole rule and it is the lead LINE, not its
+  start — a start-anchored variant scores 17 against this rule's 27 over 114
+  archived entries in one file, missing that repo's ordinary `- **#80 — bolder
+  job-type tints — SHIPPED`, and three of the six default markers are written as
+  suffixes. Vocabulary is a new key, `leadDoneMarkers`, defaulting to `null`
+  meaning "the same words" — a separate list exists precisely so that teaching
+  the per-entry count a word cannot degrade the occurrence count, and the lever
+  is measured: `**CLOSED` + `**ANSWERED` on the lead list alone moves one repo's
+  in-flight files from 2 to 6 marked while the occurrence count stays at 34.
+
+  Three limits are in the README, in `SKILL.md` and in the printed output rather
+  than only in this commit. (1) A struck or marked SUB-bullet does not close its
+  parent — and that is not a second rule: `isEntryStart` already refuses a line
+  indented past one space, so a child is never a lead. (2) An entry closed by
+  editing its BODY is structurally invisible and always will be. (3) **Zero is an
+  answer.** A repo with a real `## Completed` heading and no in-place marking
+  reports `0`, and the report says in words that this is not a parse failure and
+  not a defect, because a bare 0 reads as breakage. Proven by regression rather
+  than assertion: stub `isLeadMarkedDone` false and 5 checks go red; widen it to
+  the whole entry text and 3 go red including both named non-goals. Suite 151 ->
+  170 checks. Deferrals in `## Completion counting` above.
+  (measured against androsland/techflow at b018700 and across 14 deferred-work
+  files in 9 repos, 2026-08-21)
+
 - **A referent written as a call was answered with a fact about punctuation.**
   `safeField()` in this repo's own file reported ABSENT against 22 call sites, and
   `process.exit()` reported COMMENT-ONLY — a probable tombstone — because the only
@@ -667,50 +762,3 @@ those entries still impose were lifted into `CLAUDE.md` on the way out.
   precondition check that the fixture actually exceeds 64KiB; reverting the fix
   makes it fail at exactly 65,536. Suite 77 -> 80 checks, 0.91s.
   (security review round 9, 2026-08-17)
-
-- **Six findings, and three of them were bypasses of guards this same repo had
-  just installed.** (1) *A suppression check disagreed with the walk it was
-  checking.* `walkFiles` skips `skip.has(item.name)` at EVERY depth, so
-  `ignore: ["internal"]` removes `src/internal/auth.ts`; `ignoringSegment` asked
-  only about segment 0, so the same file came back `PATH-MISSING`,
-  `ignored:false` — the tool asserting a file that exists on disk does not. This
-  is the provenance bucket from round 7 being walked straight around: put the
-  directory anywhere but first and the quiet bucket is skipped for the loud one.
-  Reproduced before, and after the fix the same repo reports `PATH-NOT-SCANNED`
-  with `ignoredByConfig:true`. (2) *`MAX_ENTRIES` never bounded the second
-  child.* `stale.mjs` spawns one `git log -S` per distinct entry needle AND one
-  `git log` per distinct resolved referent path, and referents-per-entry has no
-  bound — one entry naming 1,200 resolving referents spawned 1,201 children with
-  the entry counter at 1. `pathCache` is now capped at `MAX_REFERENTS`, with the
-  drop count on stderr, in the report and in `--json`; proven against a
-  5,010-referent fixture — 5,000 dated, 10 announced, 26.49s. The cap docblock
-  and the README both claimed entry count bounded process count; both were
-  corrected in the same commit. (3) *`safe()` deliberately passes the bytes that
-  forge a report line.* It strips C0 and C1 but leaves tab, LF and CR, which is
-  right for a multi-line body and wrong for every single-line print sink — and
-  round 5's own entry stated the threat correctly while drawing the opposite
-  conclusion, since "redraw a SUSPECT finding to look clean" needs a bare
-  CARRIAGE RETURN and no ESC anywhere. Measured sinks: a FILENAME, a `targets`
-  config entry, a git commit SUBJECT. New `safeField` escapes tab/LF/CR plus the
-  bidi overrides (U+202A–U+202E, U+2066–2069 — included for rendering
-  manipulation, not for category) at 39 sites across the four scripts. Verified:
-  a filename carrying CR/LF that previously forged an `ABSENT (0)` line now
-  prints its escapes literally. (4) *Pathspec magic in a git argument.* Both git
-  children took referent strings as pathspecs, so a tracked file named
-  `:(exclude)src/z.ts` steered the date lookup. `--literal-pathspecs` fixes it —
-  but it is a git GLOBAL option: the review's suggested `git log
-  --literal-pathspecs` exits `fatal: unrecognized argument` (git 2.34.1), which
-  `lastCommitTouching` catches and returns as `null`, silently disabling every
-  commit lookup in the tool. Placed before the subcommand and verified in both
-  directions. (5) *Classification cost was per occurrence.* Memoised on the raw
-  string in `dead.mjs`, and skipped entirely once `seen.size` reaches
-  `MAX_REFERENTS`. The review measured the resolving form and reported 1.77s;
-  that input does not reproduce — an exact index hit short-circuits the
-  same-basename filter, so 30,000 classifications of `a/x.ts` cost 0.015s and
-  only the MISS is expensive, 1.61s against 3,001 files named `x.ts`. Measured
-  improvement on the shape that actually costs: 30k non-resolving 1.18s → 0.65s,
-  100k 2.58s → 0.77s. (6) *An empty word-list entry matched everything.*
-  `checkWordList` bounded length and count but not emptiness; `""` in
-  `inlineDoneMarkers` hits at every index of every line — 0.95s → 10.5s ASCII and
-  23.7s Greek on a 20MB target. Now rejected by name. 71/71 smoke checks after
-  every change. (security review round 8, 2026-08-17)
