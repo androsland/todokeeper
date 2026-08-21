@@ -24,7 +24,8 @@ import {
   loadConfigOrExit, repoRoot, resolveTargets, sections, entries,
   lastCommitTouching, lastCommitChangingPhrase, classifyReferent,
   buildFileIndex, rel, daysBetween, isCompletedHeading,
-  readTarget, warnIfHeadingless, safeField, jsonSafe, writeStdout, MAX_ENTRIES, MAX_REFERENTS,
+  readTarget, warnIfHeadingless, safeField, jsonSafe, writeStdout, warnIndexSkips, notedList,
+  MAX_ENTRIES, MAX_REFERENTS,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -44,6 +45,11 @@ if (targets.length === 0) {
 
 const targetSpecs = targets.map((t) => rel(root, t));
 const index = buildFileIndex(root, config.ignore);
+// Said here for the same reason `dead` says it, in the same words: a
+// `referent-missing` verdict reached over a scan that quietly dropped a link,
+// or under an `ignore` entry that protected nothing, is a different claim from
+// the same verdict reached over the whole repo.
+warnIndexSkips(index);
 
 // git log -S over the same phrase repeatedly is the slow part; entries in one
 // file share a pathspec, so the cache keys on phrase alone per run.
@@ -191,6 +197,9 @@ if (asJson) {
     // a different one. Emitted here for the same reason `dead --json` emits it:
     // a consumer reading this payload alone has no other way to tell.
     enumeration: index.mode,
+    droppedSymlinks: index.droppedSymlinks,
+    unusedIgnores: index.unusedIgnores,
+    skippedManifests: index.depsSkipped,
     entries: results, unreadTargets, droppedEntries, entryCap: MAX_ENTRIES,
     droppedReferents, referentCap: MAX_REFERENTS,
   })}\n`);
@@ -225,6 +234,21 @@ if (index.mode === 'git') {
 if (unreadTargets.length) {
   console.log(`UNREAD TARGET (${unreadTargets.length}): ${unreadTargets.map(safeField).join(', ')}`);
   console.log('No entry from these files reached any bucket below — see stderr for why.\n');
+}
+
+if (index.droppedSymlinks.length) {
+  console.log(`SYMLINK NOT SCANNED (${index.droppedSymlinks.length}): ${notedList(index.droppedSymlinks)}`);
+  console.log('Links are never followed. A referent reachable only through one dates as missing.\n');
+}
+
+if (index.unusedIgnores.length) {
+  console.log(`IGNORE ENTRY MATCHED NOTHING (${index.unusedIgnores.length}): ${notedList(index.unusedIgnores)}`);
+  console.log('Not an error. A typo looks exactly like protection, so check the spelling.\n');
+}
+
+for (const { file, reason } of index.depsSkipped) {
+  console.log(`MANIFEST NOT READ: ${safeField(file)} — it ${safeField(reason)}`);
+  console.log('Referents naming a declared dependency may date as missing repo files.\n');
 }
 
 if (droppedEntries > 0) {

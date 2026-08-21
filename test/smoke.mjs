@@ -73,6 +73,7 @@ import { fileURLToPath } from 'node:url';
 import {
   DEFAULTS, classifyReferent, buildFileIndex, loadConfig, entries,
   MAX_ENTRIES as DEAD_ENTRY_CAP, MAX_FROM as DEAD_FROM_CAP,
+  notedList, MAX_NOTED,
 } from '../scripts/lib.mjs';
 
 const IGNORED_DIR = 'interview';
@@ -1409,6 +1410,196 @@ function isEntryStartOracle(line, entryStyles) {
   return false;
 }
 
+// ------------------ 12. the three drops that used to happen in silence
+
+/**
+ * Three things the index discards, each of which makes the report understate
+ * the repo it audited: a symlink (dropped by `lstat`, so a link out of the
+ * tree cannot be read), an `ignore` entry that matched nothing (usually a
+ * typo, and a typo'd exclusion excludes nothing), and a manifest this tool
+ * REFUSED — too big, not a regular file, or resolving outside the repo.
+ *
+ * Built in both enumeration modes on purpose. The symlink drop is written
+ * TWICE, once in the `ls-files` branch and once in `walkDisk`, and a fix
+ * applied to one of the two is the exact shape of bug this repo keeps
+ * shipping. The manifest and ignore assertions are mode-independent and are
+ * re-run in both anyway, cheaply, rather than reasoned about.
+ */
+function buildSkipsFixture({ init }) {
+  const root = mkdtempSync(join(tmpdir(), 'todokeeper-skips-'));
+  const put = (p, body) => {
+    mkdirSync(join(root, dirname(p)), { recursive: true });
+    writeFileSync(join(root, p), body);
+  };
+
+  put('src/app.ts', "export const skipsCanary = 'CANARY-SKIPS-8815';\n");
+  put('web/test-results/report.html', '<p>build output</p>\n');
+  // A directory where a manifest is expected. Platform-independent, unlike the
+  // symlink below, so the manifest announcement is proven even where an
+  // unprivileged account cannot create a link.
+  put('composer.json/placeholder', 'not a manifest\n');
+
+  // One entry that matches, one that is a typo of it, and the seven shipped
+  // defaults copied in — which is how a user actually adds an entry, since a
+  // user `ignore` array REPLACES the defaults rather than extending them.
+  put('.todokeeper.json', `${JSON.stringify({
+    ignore: [...DEFAULTS.ignore, 'web/test-results', 'web/test-resluts'],
+  }, null, 2)}\n`);
+
+  put('TODOS.md', [
+    '# TODOS',
+    '',
+    '## Open',
+    '',
+    '- **A live symbol** — `skipsCanary` is defined in src.',
+    '- **Build output** — `web/test-results/report.html` is excluded.',
+    '',
+  ].join('\n'));
+
+  try {
+    writeFileSync(`${root}-outside.json`, `${JSON.stringify({ dependencies: { outsidepkg: '1.0.0' } })}\n`);
+    symlinkSync(join('src', 'app.ts'), join(root, 'link.md'));
+    // `package.json` is git-trackable as a symlink, so this ships in a clone.
+    symlinkSync(`${root}-outside.json`, join(root, 'package.json'));
+  } catch {
+    rmSync(`${root}-outside.json`, { force: true });
+  }
+
+  if (init) {
+    const git = (...args) => execFileSync('git', args, { cwd: root, stdio: 'pipe' });
+    git('init', '-q');
+    git('config', 'user.email', 'smoke@example.invalid');
+    git('config', 'user.name', 'smoke');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'fixture');
+  }
+  return root;
+}
+
+function skipsLinksPlanted(root) {
+  try {
+    return lstatSync(join(root, 'link.md')).isSymbolicLink()
+      && lstatSync(join(root, 'package.json')).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+function testSilentSkipsAnnounced() {
+  for (const init of [true, false]) {
+    const mode = init ? 'git' : 'walk';
+    const root = buildSkipsFixture({ init });
+    try {
+      const config = loadConfig(root);
+      const index = buildFileIndex(root, config.ignore);
+      check(`[${mode}] the fixture enumerates the way this phase intends`,
+        index.mode === (init ? 'git' : 'walk'), `got ${JSON.stringify(index.mode)}`);
+
+      // The typo, and only the typo. The other two assertions are what stop
+      // this becoming noise: a matching entry must stay silent, and so must
+      // every name this tool ships — most repos have no `vendor` or `.next`,
+      // and the first draft of this check fired on all of them.
+      check(`[${mode}] an ignore entry that matched nothing is reported`,
+        index.unusedIgnores.includes('web/test-resluts'),
+        `got ${JSON.stringify(index.unusedIgnores)}`);
+      check(`[${mode}] ...while the entry that DID match is not`,
+        !index.unusedIgnores.includes('web/test-results'),
+        'positive control — without this the check above passes on a list of everything');
+      check(`[${mode}] ...and no default of this tool's own is`,
+        !index.unusedIgnores.some((e) => DEFAULTS.ignore.includes(e)),
+        `crying wolf on the default config: ${JSON.stringify(index.unusedIgnores)}`);
+
+      // A refused manifest read as a repo with no dependencies, in silence.
+      const composer = index.depsSkipped.find((s) => s.file === 'composer.json');
+      check(`[${mode}] a manifest that is not a regular file is announced`,
+        Boolean(composer), `got ${JSON.stringify(index.depsSkipped)}`);
+      check(`[${mode}] ...and the note says why`,
+        /not a regular file/.test(composer?.reason ?? ''),
+        `got ${JSON.stringify(composer?.reason)}`);
+
+      const stderr = spawnSync('node', [join(SCRIPTS, 'dead.mjs'), '--root', root],
+        { encoding: 'utf8' }).stderr;
+      const text = execFileSync('node', [join(SCRIPTS, 'dead.mjs'), '--root', root],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      const json = JSON.parse(execFileSync('node',
+        [join(SCRIPTS, 'dead.mjs'), '--root', root, '--json'],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+
+      check(`[${mode}] stderr names the unmatched ignore entry`,
+        stderr.includes('web/test-resluts'), `stderr was ${JSON.stringify(stderr)}`);
+      check(`[${mode}] stderr names the refused manifest`,
+        stderr.includes('composer.json'), `stderr was ${JSON.stringify(stderr)}`);
+      check(`[${mode}] the text report carries the ignore note too`,
+        text.includes('IGNORE ENTRY MATCHED NOTHING'),
+        'a reader of the report alone must not have to have watched stderr');
+      check(`[${mode}] ...and the manifest note`, text.includes('MANIFEST NOT READ'));
+      check(`[${mode}] --json carries both`,
+        json.unusedIgnores.includes('web/test-resluts')
+          && json.skippedManifests.some((s) => s.file === 'composer.json'),
+        `got ${JSON.stringify({ u: json.unusedIgnores, m: json.skippedManifests })}`);
+
+      if (skipsLinksPlanted(root)) {
+        check(`[${mode}] a dropped symlink is announced`,
+          index.droppedSymlinks.includes('link.md'),
+          `got ${JSON.stringify(index.droppedSymlinks)}`);
+        check(`[${mode}] ...in the text report`, text.includes('SYMLINK NOT SCANNED'));
+        check(`[${mode}] ...and in --json`, json.droppedSymlinks.includes('link.md'),
+          `got ${JSON.stringify(json.droppedSymlinks)}`);
+        const pkg = index.depsSkipped.find((s) => s.file === 'package.json');
+        check(`[${mode}] a manifest resolving outside the repo is announced`,
+          /does not resolve/.test(pkg?.reason ?? ''), `got ${JSON.stringify(pkg)}`);
+        check(`[${mode}] ...and its contents never reach the report`,
+          !text.includes('outsidepkg'),
+          'the read is refused, so the package name must not appear anywhere');
+      } else {
+        console.error(`SKIP  [${mode}] symlink drops — this platform would not create one.`);
+        console.error('      The ignore and manifest halves of phase 12 still ran.');
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(`${root}-outside.json`, { force: true });
+    }
+  }
+
+  // A list item must not be able to forge the list's own punctuation. Asserted
+  // on `notedList` directly rather than through a fixture, because the input
+  // that matters is a filename this suite would then have to create.
+  check('a list item cannot forge a truncation notice',
+    notedList(['a, +9 more']) === '"a, +9 more"',
+    `got ${notedList(['a, +9 more'])}`);
+  check('...nor close its own quoting',
+    notedList(['say "hi"']) === '"say \\"hi\\""',
+    `got ${notedList(['say "hi"'])}`);
+  check('...nor with a backtick, which is why backticks were not the fix',
+    notedList(['a`, +9 more']) === '"a`, +9 more"',
+    `got ${notedList(['a`, +9 more'])}`);
+  const capped = notedList(Array.from({ length: MAX_NOTED + 2 }, (_, i) => `f${i}`));
+  check('...while a GENUINE truncation is still announced',
+    capped.endsWith(', +2 more'), `got ${capped}`);
+  check('...showing exactly MAX_NOTED items',
+    (capped.match(/"/g) || []).length === MAX_NOTED * 2, `got ${capped}`);
+
+  // The control for all of the above: a repo that configures nothing must say
+  // nothing. This is the check that would have caught the first draft, which
+  // reported this tool's own seven defaults on every clean repo in the suite.
+  const bare = mkdtempSync(join(tmpdir(), 'todokeeper-bare-'));
+  try {
+    mkdirSync(join(bare, 'src'));
+    writeFileSync(join(bare, 'src/app.ts'), 'export const bareCanary = 1;\n');
+    writeFileSync(join(bare, 'TODOS.md'),
+      '# TODOS\n\n## Open\n\n- **A live symbol** — `bareCanary` is defined.\n');
+    const index = buildFileIndex(bare, loadConfig(bare).ignore);
+    check('a repo with no .todokeeper.json reports no unmatched ignore entry',
+      index.unusedIgnores.length === 0, `got ${JSON.stringify(index.unusedIgnores)}`);
+    const run = spawnSync('node', [join(SCRIPTS, 'dead.mjs'), '--root', bare],
+      { encoding: 'utf8' });
+    check('...and its run says nothing on stderr at all',
+      run.stderr === '', `got ${JSON.stringify(run.stderr)}`);
+  } finally {
+    rmSync(bare, { recursive: true, force: true });
+  }
+}
+
 // -------------------------------------------------------------------- driver
 
 let root;
@@ -1434,6 +1625,7 @@ try {
     ['lead-marked-done', testLeadMarkedDone],
     ['ignore-validation', testIgnoreValidation],
     ['entries-generator', testEntriesGenerator],
+    ['silent-skips', testSilentSkipsAnnounced],
   ]) {
     try {
       phase(root);

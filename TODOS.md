@@ -375,18 +375,6 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   for WHICH file to drop — a choice with no obviously right answer.
   (security review, 2026-08-17)
 
-- **A rejected `package.json` degrades the dependency filter silently.**
-  `declaredDependencies` skips a manifest that is oversize, resolves outside the
-  tree, or is not a regular file, and says nothing — it shares the existing
-  catch-all path where a missing or unparseable manifest simply means the filter
-  does not apply. The cost is the documented one (a few extra entries in a
-  bucket a human reads), but unlike the target skips it is not announced, so a
-  2MB `package.json` looks like a repo with no dependencies. Announcing it would
-  also have to stay quiet for the ordinary no-manifest case, which is the same
-  code path — that separation is the actual work, and it has not been done.
-  (security review, 2026-08-17; widened 2026-08-17 when containment and
-  regular-file checks joined the cap)
-
 - **The control-byte scan still runs only when someone runs it.**
   (bundle 3, 2026-08-21) `testNoControlBytes` now reads the tracked tree and
   catches bidi, but nothing invokes the suite — no hook, no CI, no pre-commit —
@@ -500,33 +488,36 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   the first cut of the git enumeration used `statSync`, which FOLLOWS a link —
   and git lists a tracked symlink exactly like a file, so a link into the
   gitignored tree bypassed the whole fix while the suite stayed green. Fixed
-  with `lstatSync` + skip, matching what the Dirent-based walk always did. The
-  residue is the skip itself: a repo that reaches a real doc through a symlink
-  loses it from the scan and is told nothing. **Do not "fix" this by following
-  the link and re-checking the target against `.gitignore`** — that is a second
-  ignore evaluation written by us, on the resolved path, and getting it wrong
-  fails in the direction that reads the file. If it is ever wanted, the shape is
-  `git check-ignore` on the resolved target plus a containment check, and it
-  needs its own canary test through a link.
+  with `lstatSync` + skip, matching what the Dirent-based walk always did. The skip
+  itself is now announced (see `## Completed`); following the link and
+  re-checking the target against `.gitignore` was rejected then and stays
+  rejected — it is a second ignore evaluation written by us, on the resolved
+  path, and getting it wrong fails in the direction that reads the file.
 - **The symlink tests do not run where symlinks cannot be created.** (same
   review, 2026-08-19) An unprivileged Windows account cannot make one, so phase
   8 prints a SKIP and covers nothing about links there. The skip is loud
   because the alternative — four checks silently not running — is
   indistinguishable from four checks passing.
 
-- **A well-formed `ignore` entry naming a path that does not exist is still a
-  silent no-op.** (found fixing the gitignore defect, 2026-08-19) `loadConfig`
-  now rejects every shape that CANNOT match — glob, absolute, backslash, `..`,
-  empty, padded — but `web/test-resluts` passes all of them and excludes
-  nothing, which is the same failure one level in. It is detectable, unlike the
-  shapes above: after `listFiles` has run, an entry whose `names` member matches
-  no segment and whose `paths` member prefixes no path matched nothing, and a
-  one-line stderr note naming it would close this. Not done here because the
-  check belongs after enumeration rather than at config load, and wiring a
-  load-time validator to a post-enumeration fact is a bigger change than the
-  defect it closes. **Do not turn it into an error** — a repo legitimately
-  carries an `ignore` entry for a directory it has not created yet, or one
-  that exists only on another branch.
+- **Nothing checks that an `ignore` entry matched what it MEANT to match.**
+  (bundle 5, 2026-08-21) The unmatched-entry note fires when an entry matched
+  no path at all. An entry that matched the WRONG path is indistinguishable
+  from one that worked: a bare name like `build` excludes every directory of
+  that name at every depth, so a repo meaning `web/build` and writing `build`
+  silently drops `docs/build` too and the entry reads as used. This is the
+  shape the check structurally cannot see, and closing it would mean asking
+  what the author intended, which nothing here can do. Recorded as the limit,
+  not as work.
+
+- **The noted lists elide past 20 entries with no note of their own.**
+  (bundle 5, 2026-08-21) `notedList` prints `+N more` after `MAX_NOTED = 20`,
+  which is the right shape for a stderr line but is quieter than the rest of
+  this tool: every other truncation in it announces itself as a truncation, on
+  stderr AND in the report, because a partial result that reads like a complete
+  one is the error the tool exists to prevent. The elision here is visible in
+  the line itself, so this is a consistency gap rather than a defect — but a
+  repo with 40 dropped symlinks is told about 20 of them in a report that
+  otherwise promises to say when it stopped early.
 
 - **Only one of the five fallback branches is tested.** (found fixing the
   gitignore defect, 2026-08-19) `gitEnumerate` returns null — and the plain walk
@@ -571,9 +562,89 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
 
 ## Completed
 
-The five most recent. Everything older moved to `TODOS-DONE.md` when this file
-crossed the 50,000-byte split threshold the tool itself reports; the constraints
-those entries still impose were lifted into `CLAUDE.md` on the way out.
+Everything older than these moved to `TODOS-DONE.md` when this file crossed the
+50,000-byte split threshold the tool itself reports; the constraints those
+entries still impose were lifted into `CLAUDE.md` on the way out.
+
+This section was cut to the five most recent at that split and has grown back
+to ten since, so it is **not** "the five most recent" any more and the line
+saying it was has been removed rather than left to read as current. The next
+cut is blocked on a different fact: `## Completed` has no entries for the work
+merged as PRs #6 and #7, and archiving a stale section keeps five older entries
+while archiving the recent ones. Write those two first, then split.
+
+- **Three drops the index made in silence now say so — and the first draft of
+  the check cried wolf on every clean repo.** (bundle 5, 2026-08-21) A dropped
+  symlink, an `ignore` entry that matched nothing, and a manifest this tool
+  REFUSED were each filed separately and share one cause: the index discarded
+  something and the report understated the repo it audited. All three are now
+  announced on stderr AND in the text report AND in `--json`
+  (`droppedSymlinks`, `unusedIgnores`, `skippedManifests`), because a reader of
+  the report alone must not have to have watched stderr.
+
+  Both DON'Ts on the filed entries were honoured. The link is not followed and
+  re-checked against `.gitignore` — that would be a second ignore evaluation
+  written by us, failing in the direction that reads the file. An unmatched
+  entry is not an error and never becomes one; a repo legitimately names a
+  directory it has not created yet.
+
+  The design constraint was `ignore` being deliberately unbounded, so a
+  per-path loop over the list would make it multiply — cost here is
+  `referents × scanned-bytes` and every new pass over the corpus is a product.
+  Instead `ignoredBy` took an optional `used` Set, recording matches inside the
+  single existing predicate and preserving its exact return value; without the
+  Set it early-exits exactly as before. That also avoided writing a second
+  "did this entry match" routine, which the `compileIgnore` docblock warns
+  against for the reason two predicates always drift.
+
+  **The first cut fired on every clean fixture in the suite**, and the suite
+  caught it: 192/228 with the seven names in `DEFAULTS.ignore` reported as
+  unmatched, because most repos have no `vendor`, `target` or `.next`. The fix
+  that did NOT work was provenance — recording which entries the repo authored
+  — because a user `ignore` array REPLACES the defaults rather than extending
+  them, so the ordinary way to add one entry is to copy all seven and append,
+  which this repo's own enumeration fixture does. Provenance therefore cannot
+  separate a shipped name from a repo-authored one; only the NAME can, and
+  `SHIPPED_IGNORE` is that set. **The accepted cost is a false negative**: a
+  repo that means `dist` and has genuinely lost it is not told. That is the
+  harmless direction, and a check that cries wolf on the default configuration
+  is worse than no check.
+
+  Suite 194 → 228 checks, phase 12 run in BOTH enumeration modes because the
+  symlink drop is written twice — once in the `ls-files` branch, once in
+  `walkDisk`. Four mutations, each caught by exactly the assertions that should
+  catch it: emptying `unusedIgnores` failed 8, dropping the `SHIPPED_IGNORE`
+  filter failed 6 (including two pre-existing pipe tests), removing the git
+  branch's symlink push failed 3 — `[git]` only, which is what proves the walk
+  branch is separate coverage rather than the same line asserted twice — and
+  removing the not-a-regular-file skip failed 8.
+
+  **Security review returned one Low and it was fixed rather than filed**, on
+  the ground that forging what the run prints is half this tool's threat
+  model: `notedList` joined items with a bare `, ` and the truncation suffix
+  is `, +M more`, so a symlink named `x, +9 more` rendered as a second entry
+  plus a truncation notice that never happened. `safeField` cannot see it —
+  no control byte is involved, only ordinary commas. The reviewer's suggested
+  fix was backtick quoting; **that does not close it**, because a
+  repo-supplied path may contain a backtick and then the item ends its own
+  quoting. Items are now `JSON.stringify`'d — quoting an item cannot emit its
+  way out of, since the quote and the backslash are both escaped — and then
+  passed through `safeField`, in that order, so tab/CR/LF leave as
+  two-character escapes while the bidi overrides and the C1 block that
+  `JSON.stringify` emits RAW are still caught. Reversing the two
+  double-escapes every backslash. The count before the colon is computed from
+  `.length` at the call site and was always truthful; this stops the LIST
+  from lying on its own. Both mutations are caught, including the backtick
+  form, which is what records that the suggested fix was insufficient. Suite
+  228 → 233.
+
+  Stated limits, so a pass is not read as more than it is: a shipped default
+  name is never reported however it got into the list; an `ignore` entry
+  nested under an already-ignored directory is marked covered rather than
+  tested, so `["node_modules", "node_modules/.cache"]` is not called a typo;
+  a manifest that is PRESENT and unparseable stays silent on purpose, since
+  what is announced is only a file this tool refused when it could have read
+  it; and nothing detects suppression or knows intent.
 
 - **A failed write to stdout printed a native stack trace, and the entry
   describing it was wrong about which failure it was.** Filed as "`writeStdout`

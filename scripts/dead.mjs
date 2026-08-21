@@ -28,7 +28,8 @@ import { readFileSync, statSync } from 'node:fs';
 import {
   loadConfigOrExit, repoRoot, resolveTargets, sections, entries,
   classifyReferent, buildFileIndex, walkFiles, isText, rel, isCompletedHeading,
-  readTarget, warnIfHeadingless, safeField, jsonSafe, writeStdout, MAX_REFERENTS, MAX_ENTRIES, MAX_FROM,
+  readTarget, warnIfHeadingless, safeField, jsonSafe, writeStdout, warnIndexSkips, notedList,
+  MAX_REFERENTS, MAX_ENTRIES, MAX_FROM,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -174,6 +175,9 @@ if (unread > 0 || skippedForSize > 0) {
 }
 
 const index = buildFileIndex(root, config.ignore);
+// Before a single verdict is computed, because all three change what a verdict
+// MEANS and an operator who reads them after the table has already acted.
+warnIndexSkips(index);
 const classified = new Map();
 const seen = new Map();
 
@@ -347,6 +351,12 @@ if (asJson) {
     // `'git'` or `'walk'`. On `'walk'` nothing consulted `.gitignore`, so an
     // ABSENT or PATH-EXISTS verdict was reached over a different file set.
     enumeration: index.mode,
+    // Three skips that are not verdicts and are not caps: a dropped symlink, an
+    // `ignore` entry that excluded nothing, and a manifest this tool refused.
+    // Each one narrows the scan the verdicts were reached over.
+    droppedSymlinks: index.droppedSymlinks,
+    unusedIgnores: index.unusedIgnores,
+    skippedManifests: index.depsSkipped,
     referents: report,
     unreadTargets,
     droppedReferents,
@@ -378,6 +388,21 @@ if (index.mode === 'git') {
 if (unreadTargets.length) {
   console.log(`UNREAD TARGET (${unreadTargets.length}): ${unreadTargets.map(safeField).join(', ')}`);
   console.log('No referent from these files was collected — see stderr for why.\n');
+}
+
+if (index.droppedSymlinks.length) {
+  console.log(`SYMLINK NOT SCANNED (${index.droppedSymlinks.length}): ${notedList(index.droppedSymlinks)}`);
+  console.log('Links are never followed. A doc reached only through one is absent from every verdict.\n');
+}
+
+if (index.unusedIgnores.length) {
+  console.log(`IGNORE ENTRY MATCHED NOTHING (${index.unusedIgnores.length}): ${notedList(index.unusedIgnores)}`);
+  console.log('Not an error. A typo looks exactly like protection, so check the spelling.\n');
+}
+
+for (const { file, reason } of index.depsSkipped) {
+  console.log(`MANIFEST NOT READ: ${safeField(file)} — it ${safeField(reason)}`);
+  console.log('Referents naming a declared dependency may appear below as missing repo files.\n');
 }
 
 const explain = {
