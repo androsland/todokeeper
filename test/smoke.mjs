@@ -65,7 +65,7 @@
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, lstatSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, lstatSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -707,7 +707,16 @@ function testCounts() {
  * report, or any `console.log` outside the two `--json` sinks.
  */
 function testPipedJson() {
-  const root = mkdtempSync(join(tmpdir(), 'todokeeper-pipe-'));
+  const base = mkdtempSync(join(tmpdir(), 'todokeeper-pipe-'));
+  // A directory name that is SYNTAX to a shell, so the shell-out below is a
+  // real assertion about argument passing rather than a claim about it. Inside
+  // double quotes a shell still expands `$(...)` and backticks, and
+  // `JSON.stringify` escapes neither — so the interpolated form this replaced
+  // resolves `--root` to a DIFFERENT directory and the phase fails. Nothing
+  // hostile can reach here (`mkdtempSync` and this repo's own script path are
+  // the only inputs); the point is that the test would notice if it could.
+  const root = join(base, 'a$(exit 7)`echo x`b');
+  mkdirSync(root, { recursive: true });
   try {
     mkdirSync(join(root, 'src'), { recursive: true });
     writeFileSync(join(root, 'src', 'real.ts'), 'export const a = 1;\n');
@@ -726,8 +735,14 @@ function testPipedJson() {
       Buffer.byteLength(direct) > 65_536,
       `${Buffer.byteLength(direct)} bytes — below this, piping proves nothing`);
 
+    // Positional arguments, not interpolation. `JSON.stringify` escapes `\"` and
+    // backslash and leaves `$` and backticks alone, so the old quoting was
+    // incidental rather than principled: it happened to hold because both
+    // values are internally generated — this repo's own script path and an
+    // `mkdtempSync` name. `"$1"` and `"$2"` hold because the shell never parses
+    // them as syntax at all.
     const piped = execFileSync('sh',
-      ['-c', `node ${JSON.stringify(dead)} --root ${JSON.stringify(root)} --json | cat`],
+      ['-c', 'node "$1" --root "$2" --json | cat', 'sh', dead, root],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
 
     check('dead.mjs --json survives a pipe intact',
@@ -746,8 +761,70 @@ function testPipedJson() {
       check('piped --json carries every referent', parsed.referents.length === 400,
         `${parsed.referents.length} referents`);
     }
+
+    checkWriteFailures(dead, root);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(base, { recursive: true, force: true });
+  }
+}
+
+/**
+ * The two ways a write can fail, which are not the same fact.
+ *
+ * `writeStdout` used to listen for neither the callback error nor the stream's
+ * `'error'` event, so BOTH ways surfaced as Node's default unhandled-event
+ * throw: a native stack trace on stderr, from a tool whose whole contract is a
+ * report an operator can read. Measured before the fix, on Node 24.17.0:
+ * `dead.mjs --json | head -c 10` printed 497 bytes of stack on 5 runs out of 5
+ * and exited 0, and `--json > /dev/full` printed the same shape with `ENOSPC`
+ * and exited 1.
+ *
+ * They are asserted separately because the correct answers differ. A closed
+ * pipe is the CONSUMER's decision — `| head` is what it is for — so the right
+ * output is nothing at all and status 0. Anything else is a real failure and
+ * must not exit 0, which is what the original entry was filed about.
+ *
+ * NOT covered: only `dead.mjs` is exercised, for the same reason the pipe test
+ * above only covers `dead.mjs` — it is the one script whose fixture reliably
+ * exceeds one pipe buffer. `stale.mjs` and `measure.mjs` share the helper and
+ * are not run here. Nor does this cover a failure of the stderr line itself.
+ */
+function checkWriteFailures(dead, root) {
+  // `> /dev/full` is the cheapest real non-EPIPE write error there is, and it
+  // is Linux-only. A missing one is announced rather than skipped in silence.
+  let full = false;
+  try {
+    full = statSync('/dev/full').isCharacterDevice();
+  } catch { full = false; }
+
+  if (full) {
+    const res = spawnSync('sh', ['-c', 'node "$1" --root "$2" --json > /dev/full', 'sh', dead, root],
+      { encoding: 'utf8' });
+    check('a non-EPIPE write failure does not exit 0',
+      res.status === 3, `exit ${res.status}`);
+    check('a non-EPIPE write failure prints one line, not a stack',
+      /^todokeeper: could not write the report to stdout \(ENOSPC\)\./.test(res.stderr)
+        && !res.stderr.includes("Unhandled 'error' event"),
+      JSON.stringify(res.stderr.slice(0, 120)));
+  } else {
+    console.error('SKIP  non-EPIPE write-failure check — no /dev/full on this host.');
+  }
+
+  // `head -c` is POSIX.1-2024 but was a GNU extension for a long time; if this
+  // host has not got it the pipeline fails for the wrong reason, so prove it
+  // works before trusting what it reports.
+  const probe = spawnSync('sh', ['-c', 'printf abcdef | head -c 2'], { encoding: 'utf8' });
+  if (probe.status === 0 && probe.stdout === 'ab') {
+    const res = spawnSync('sh',
+      ['-c', '{ node "$1" --root "$2" --json; echo "NODE_EXIT=$?" >&2; } | head -c 10 > /dev/null',
+        'sh', dead, root],
+      { encoding: 'utf8' });
+    check('a consumer closing the pipe leaves stderr empty and the status 0',
+      res.stderr === 'NODE_EXIT=0\n',
+      JSON.stringify(res.stderr.slice(0, 160)));
+  } else {
+    console.error('SKIP  EPIPE check — `head -c` is unavailable here, so an early pipe close '
+      + 'cannot be provoked.');
   }
 }
 

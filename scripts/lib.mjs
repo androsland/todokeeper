@@ -7,7 +7,7 @@
  * that guessed at it would be wrong silently.
  */
 
-import { readFileSync, existsSync, statSync, lstatSync, readdirSync, realpathSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, lstatSync, readdirSync, realpathSync, writeSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
@@ -199,24 +199,92 @@ export function jsonSafe(value) {
  *
  * The `await` at the call site matters as much as the flush. It suspends the
  * module, so the text report below the `--json` block does not run before the
- * exit lands. Resolving on error rather than rejecting keeps `| head` from
- * turning an EPIPE into an unhandled rejection, matching what `console.log`
- * already did.
+ * exit lands.
+ *
+ * A FAILED write is reported twice — once to the callback below, and once as an
+ * `'error'` event on the stream — and this listened for neither. Measured on
+ * Node 24.17.0 against this repo:
+ *
+ *  - `dead.mjs --json | head -c 10` printed a 497-byte
+ *    `Unhandled 'error' event` stack to stderr on 5 runs out of 5, and exited
+ *    0. Closing a pipe early is what `head` is FOR, so the correct output there
+ *    is nothing at all.
+ *  - `measure.mjs --json > /dev/full` printed the same shape of stack, with
+ *    `ENOSPC` and a `node:internal/fs/sync_write_stream` frame, and exited 1.
+ *
+ * So the swallow was never the whole story: resolving instead of rejecting
+ * avoided an unhandled REJECTION and left an unhandled EVENT, which is worse
+ * — a native stack trace, from a tool whose entire output contract is that an
+ * operator can read it. Both cases now go through `failWrite`, and the two are
+ * separated on the axis that matters to a caller: EPIPE is the consumer's
+ * choice and exits 0 silently; anything else is a real failure and exits 3
+ * with one line naming the errno.
  *
  * Non-goals, so this is not read as more than it is:
  *  - It does NOT make `console.log` safe. Every other call site in these
  *    scripts is still async-on-a-pipe; they are safe only because a text
  *    report ends by falling off the end of the module rather than by
- *    `process.exit`, and nothing enforces that a future one will.
+ *    `process.exit`, and nothing enforces that a future one will. The
+ *    `'error'` listener attached here is process-wide, so a `console.log`
+ *    running AFTER the first `writeStdout` no longer throws a native stack —
+ *    but it is still not flushed, and no script calls them in that order.
  *  - It bounds nothing. A report too large to be useful is still emitted in
  *    full; see `MAX_ENTRIES` / `MAX_REFERENTS` / `MAX_FROM` for the caps.
- *  - It says nothing about stderr, which every script still writes through
- *    `console.error` and which has the same shape — smaller payloads only.
+ *  - It does not make a partial report VALID. `EPIPE` still leaves the consumer
+ *    holding a prefix; the claim is only that the tool stops adding a stack
+ *    trace to it.
+ *  - It says nothing about the stderr path used by `console.error`, which has
+ *    the same shape — smaller payloads only. `failWrite`'s own line is the one
+ *    exception, and it uses `writeSync` for exactly that reason.
  */
 export function writeStdout(text) {
   return new Promise((resolve) => {
-    process.stdout.write(text, () => resolve());
+    // Attached once and never removed. The event and the callback have no
+    // guaranteed order — both orders were observed while measuring — so
+    // detaching inside the callback reopens the window this closes.
+    //
+    // It is process-wide, which is the cost: from here on, a write to stdout
+    // that does NOT go through this function has its failure swallowed with no
+    // stack AND no `failWrite` line. That is only safe because every call site
+    // exits on the next statement, so nothing prints after this. IF YOU ADD
+    // OUTPUT AFTER A `writeStdout` CALL, route it through this function too.
+    if (process.stdout.listenerCount('error') === 0) process.stdout.on('error', () => {});
+    process.stdout.write(text, (err) => {
+      if (err && err.code !== 'EPIPE') failWrite(err);
+      resolve();
+    });
   });
+}
+
+/**
+ * One line to stderr, then exit 3.
+ *
+ * Exits from inside the helper rather than reporting upward because every call
+ * site is `await writeStdout(...)` followed immediately by `process.exit(0)`:
+ * a `process.exitCode = 3` set here would be overwritten by the next statement,
+ * and a rejection would have to be caught identically at four sites, which is
+ * the shape of convention that this repo has already watched go unenforced
+ * twice. Exiting cannot be forgotten by a call site added later.
+ *
+ * `writeSync` rather than `console.error` because the process is about to be
+ * torn down: `process.stderr` is asynchronous on a pipe, and `process.exit`
+ * discards its buffer — which is the bug this whole helper exists to fix, and
+ * it would be absurd to reintroduce it in the line that reports it.
+ *
+ * 3, not 2: 2 already means "the input was unusable" at four sites. A failure
+ * to WRITE the answer is a different fact from a failure to READ the question,
+ * and a caller that retries should be able to tell them apart.
+ */
+function failWrite(err) {
+  const code = typeof err?.code === 'string' ? err.code : 'unknown';
+  try {
+    writeSync(2, `todokeeper: could not write the report to stdout (${safeField(code)}). `
+      + 'Output is incomplete.\n');
+  } catch {
+    // stderr is gone too. The exit status is the only channel left, and it is
+    // the reason this function exists.
+  }
+  process.exit(3);
 }
 
 /**
