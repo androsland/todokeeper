@@ -434,18 +434,24 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   never run outside a synthetic test.
   (2026-08-17)
 
-- **`MAX_ENTRIES` caps what is PROCESSED, never what is MATERIALISED.**
-  `entries()` is eager — it does `body.split('\n')` and builds the whole array
-  before the caller sees the first element — so both `dead.mjs` and `stale.mjs`
-  allocate every entry in the file and then decline to process the ones past the
-  cap. Measured on a 63.8MB target holding 2,163,704 entries, which is INSIDE
-  `TARGET_CAP` and therefore admitted: peak RSS 1.24GB after the caps landed,
-  roughly 19x the file. The skip message on `TARGET_CAP` tells the operator a
-  target costs "several times its size", and 19x is not what a reader takes from
-  that. The fix is making `entries()` a generator; it was not bundled with a
-  security round because every caller indexes the returned array.
-  (self-review, 2026-08-17; corroborated Medium — security review round 10,
-  2026-08-17, the only finding it rated above Low)
+- **A target still costs ~10x its size, and the `TARGET_CAP` skip message still
+  says "several times".** The generator took the 64MB fixture from 19x to about
+  10x (`dead.mjs` 635,228 kB, `measure.mjs` 662,076 kB on 63,999,792 bytes), so
+  the complaint that prompted it is answered in direction and not in kind. What
+  is left is not entry-shaped: the corpus, the target text and the per-section
+  body slices from `sections()`. Bounding those means streaming the section
+  split, which changes the parse rather than an allocation. Until then the skip
+  message and the number an operator can measure still disagree by a factor.
+  (bundle 1, 2026-08-21)
+
+- **`stale.mjs`'s share of the generator saving is asserted, not measured.** It
+  runs the same `entries()` path as the two scripts that were measured, but on
+  the 2,370,362-entry fixture it issues 5,000 `git log -S` calls against a 64MB
+  blob and did not finish in nine minutes, so no before/after peak RSS exists
+  for it. A fixture that collapses the phrase cache to one key would isolate the
+  memory from the git cost; nothing here does that yet, and the docblock on
+  `entries()` says which of the three numbers is observed.
+  (bundle 1, 2026-08-21)
 
 - **`MAX_FROM` drops the tail, it does not sample.** A referent named by 5,000
   entries reports the first 64 and `+4936 more`. The count is honest and the
@@ -575,6 +581,38 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
 The five most recent. Everything older moved to `TODOS-DONE.md` when this file
 crossed the 50,000-byte split threshold the tool itself reports; the constraints
 those entries still impose were lifted into `CLAUDE.md` on the way out.
+
+- **`entries()` allocated every entry in a target before `MAX_ENTRIES` could
+  decline any of them.** It was eager: `body.split('\n')` held one array slot
+  per line for the whole scan, and the returned array held every entry's joined
+  text, lead phrase, search needle and referent Set — so `dead.mjs` and
+  `stale.mjs` paid for the entries past the cap and then skipped them. Now a
+  generator, with the line walk replaced by an `indexOf`-based `eachLine` that
+  reproduces `split('\n')` exactly, trailing empty string included. Measured on
+  a 63,999,792-byte target holding 2,370,362 entries, just under `TARGET_CAP`:
+  `dead.mjs` **1,194,016 kB -> 635,228 kB (-47%)**, `measure.mjs`
+  **1,317,484 kB -> 662,076 kB (-50%)**; the generator alone accounted for
+  `dead.mjs` 714,608 kB and the line walk took the remaining 79,380 kB.
+
+  The old entry's stated blocker — "it was not bundled with a security round
+  because every caller indexes the returned array" — was FALSE by the time it
+  was cashed, and that is the reusable part: `dead.mjs:214` and `stale.mjs:84`
+  were already plain `for...of` and needed no edit at all, and only
+  `measure.mjs` bound the array, for two `.length` reads and a `.filter().length`
+  that collapse into one counting pass. A blocker recorded in a deferral is a
+  claim about code that keeps changing under it; re-check it before pricing the
+  work, not after.
+
+  Verified: `node test/smoke.mjs` 180/180 with a new `entries-generator` phase
+  that pins iterator-ness and single-use, and compares the line walk against a
+  verbatim copy of the pre-generator splitter over eight bodies. Both halves
+  mutation-tested — dropping the trailing empty string fails 5 checks, returning
+  an array again fails 2. `--json` output on this repo is unchanged for all three
+  scripts except where the tool audits its own new docblock (line numbers in
+  `scripts/lib.mjs`, and comment-hit counts for `entries`, `TARGET_CAP`,
+  `MAX_ENTRIES`, `body.split('\n')`, `>` and `..`).
+  (bundle 1, 2026-08-21; closes the self-review + round-10 security finding of
+  2026-08-17)
 
 - **`measure.mjs` answered "how many of my open entries are closed?" with a
   count of substrings.** `inlineDoneMarkers` was `sec.body.split(m).length - 1`

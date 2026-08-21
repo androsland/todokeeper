@@ -105,20 +105,26 @@ for (const abs of targets) {
     if (completedHere) completedDepth = sec.depth;
 
     const inCompleted = completedDepth != null;
-    const found = entries(sec.body, config.entryStyles);
     const marks = config.inlineDoneMarkers.reduce(
       (n, m) => n + sec.body.split(m).length - 1,
       0,
     );
-    // Counted over the SAME entry objects `found` already holds, so the two
-    // numbers below cannot drift apart by disagreeing about what an entry is.
-    const marked = found.filter((e) => isLeadMarkedDone(e.text, leadMarkers)).length;
+    // Counted in the SAME pass over the SAME entry objects, so the two numbers
+    // below cannot drift apart by disagreeing about what an entry is. One pass
+    // rather than an array plus a filter because `entries()` is a generator:
+    // nothing here needs an entry after the next one is read.
+    let sectionEntries = 0;
+    let marked = 0;
+    for (const entry of entries(sec.body, config.entryStyles)) {
+      sectionEntries += 1;
+      if (isLeadMarkedDone(entry.text, leadMarkers)) marked += 1;
+    }
 
     if (inCompleted) {
       completedBytes += sec.bytes;
-      completedEntries += found.length;
+      completedEntries += sectionEntries;
     } else {
-      liveEntries += found.length;
+      liveEntries += sectionEntries;
       inlineDone += marks;
       // Live sections only, and for the same reason `inlineDone` is: an entry
       // under `## Completed` is already counted as finished by the heading, so
@@ -131,7 +137,7 @@ for (const abs of targets) {
       heading: sec.heading ?? '(preamble)',
       depth: sec.depth,
       bytes: sec.bytes,
-      entries: found.length,
+      entries: sectionEntries,
       completed: inCompleted,
       inlineDoneMarkers: inCompleted ? 0 : marks,
       entriesMarkedDone: inCompleted ? 0 : marked,

@@ -924,36 +924,82 @@ export function warnIfHeadingless(secs, text, label) {
  * Entries within a section. An entry runs from its opening bullet to the line
  * before the next bullet at the same-or-shallower indent, so a multi-paragraph
  * entry stays one entry rather than becoming one per line.
+ *
+ * A GENERATOR, and deliberately so. `MAX_ENTRIES` bounds what `dead.mjs` and
+ * `stale.mjs` PROCESS, and while this returned an array it bounded nothing that
+ * was ALLOCATED: every entry in the section was materialised — joined text,
+ * lead phrase, search needle and referent list — before the first one reached
+ * the cap, and `body.split('\n')` held one array slot per line beside it.
+ * Measured on a 63,999,792-byte target holding 2,370,362 entries, just under
+ * `TARGET_CAP`, peak RSS:
+ *
+ *    dead.mjs     1,194,016 kB -> 635,228 kB   (-47%)
+ *    measure.mjs  1,317,484 kB -> 662,076 kB   (-50%)
+ *
+ * `stale.mjs` shares this code path and was NOT measured: on that fixture it
+ * issues 5,000 `git log -S` calls against a 64 MB blob and does not finish in
+ * nine minutes. Its saving is asserted from the shared path, not observed.
+ *
+ * What this does NOT fix, stated so the generator is not read as a bound it is
+ * not. The corpus, the target text and the per-section body slices are all
+ * untouched, so a run is still linear in the target's size — the cap that
+ * bounds THAT is `TARGET_CAP`, and 635 MB of the original 1.19 GB is still
+ * there. Every entry past `MAX_ENTRIES` is still fully materialised and then
+ * discarded, because a consumer that only wants to COUNT the remainder has no
+ * way to say so; past the cap the cost is CPU, not memory. And a single entry
+ * whose body runs to the whole target still accumulates line by line into
+ * `current`, so the cap on the worst SINGLE entry is `TARGET_CAP` too.
+ *
+ * Consequence for callers: the result is single-use and has no `.length`. Two
+ * of the three scripts already iterated it with `for...of` and needed no
+ * change; `measure.mjs` bound the array and now counts in one pass.
  */
-export function entries(body, entryStyles) {
-  const lines = body.split('\n');
-  const out = [];
+export function* entries(body, entryStyles) {
   let current = null;
   let fence = null;
 
-  for (const line of lines) {
+  for (const line of eachLine(body)) {
     const fenceMatch = /^\s*(```+|~~~+)/.exec(line);
     if (fenceMatch) {
       if (fence === null) fence = fenceMatch[1][0];
       else if (line.trimStart().startsWith(fence)) fence = null;
-      if (current) current.lines.push(line);
+      if (current) current.push(line);
       continue;
     }
     if (fence === null && isEntryStart(line, entryStyles)) {
-      if (current) out.push(current);
-      current = { lines: [line] };
+      if (current) yield materialiseEntry(current);
+      current = [line];
     } else if (current) {
-      current.lines.push(line);
+      current.push(line);
     }
   }
-  if (current) out.push(current);
+  if (current) yield materialiseEntry(current);
+}
 
-  return out.map((e) => {
-    const text = e.lines.join('\n');
-    return {
-      text, lead: leadPhrase(text), needle: searchNeedle(text), referents: referentsIn(text),
-    };
-  });
+/**
+ * `body.split('\n')`, one line at a time. Identical sequence — including the
+ * trailing empty string when `body` ends in a newline, and the single empty
+ * string for an empty `body` — without the array. That array was one slot per
+ * line of the target, held for the whole scan; on the 2,370,362-entry fixture
+ * it was the largest survivor once the entry array was gone, and dropping it
+ * took `dead.mjs` from 714,608 kB to 635,228 kB after the generator alone.
+ */
+function* eachLine(s) {
+  let i = 0;
+  for (;;) {
+    const j = s.indexOf('\n', i);
+    if (j === -1) { yield s.slice(i); return; }
+    yield s.slice(i, j);
+    i = j + 1;
+  }
+}
+
+/** The derived shape every consumer of `entries()` reads. */
+function materialiseEntry(lines) {
+  const text = lines.join('\n');
+  return {
+    text, lead: leadPhrase(text), needle: searchNeedle(text), referents: referentsIn(text),
+  };
 }
 
 /** The words the per-entry count uses: `leadDoneMarkers` if set, else the same list. */
