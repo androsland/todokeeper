@@ -1186,6 +1186,7 @@ export function buildFileIndex(root, ignore) {
   const byBase = new Map();
   const dirs = new Set();
   const listing = listFiles(root, ignore);
+  const deps = declaredDependencies(root);
   for (const abs of listing.files) {
     const path = rel(root, abs);
     byPath.add(path);
@@ -1211,7 +1212,14 @@ export function buildFileIndex(root, ignore) {
     // a coverage it may not have — see `listFiles`.
     mode: listing.mode,
     gitIgnored: listing.gitIgnored,
-    deps: declaredDependencies(root),
+    // A tracked symlink is dropped from the scan and an `ignore` entry that
+    // matched nothing excludes nothing. Both were silent, and both change what
+    // a verdict MEANS: the first can turn a live referent into an ABSENT one,
+    // the second reads like protection that is not there.
+    droppedSymlinks: listing.droppedSymlinks,
+    unusedIgnores: listing.unusedIgnores,
+    deps: deps.names,
+    depsSkipped: deps.skipped,
   };
 }
 
@@ -1230,34 +1238,142 @@ export function buildFileIndex(root, ignore) {
  */
 function declaredDependencies(root) {
   const names = new Set();
+  const skipped = [];
   const manifests = [
     ['package.json', ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']],
     ['composer.json', ['require', 'require-dev']],
   ];
   for (const [file, fields] of manifests) {
+    const candidate = join(root, file);
+    // `lstat` first, and ONLY to separate the two facts that shared one
+    // `continue`. No manifest is the ordinary case and must stay silent — most
+    // repos have no `composer.json` — while a manifest that IS there and was
+    // REFUSED is the case that made a 2MB `package.json` look like a repo with
+    // no dependencies. That separation is the whole change; the announcement
+    // is the easy half.
+    //
+    // It is safe to put ahead of `contained()`: `lstat` follows nothing and
+    // reads nothing, so the two gates this repo keeps re-learning to write —
+    // `contained()` AND `isFile()` before any read — still stand between here
+    // and the first byte, in that order, below.
     try {
-      // Containment, not merely a size cap, and these two files were the only
-      // ones in the tool that had neither. `package.json` is git-trackable as
-      // a symlink (mode 120000), so `package.json -> ../outside/evil.json`
-      // ships in a clone and needs no config: measured, an external
-      // `dependencies` key reclassified an in-repo referent as a package and
-      // dropped it out of `dead.mjs`'s report entirely. The read reaches
-      // outside the tree AND changes the finding.
-      const abs = contained(root, join(root, file));
-      if (!abs) continue;
-      // Before the read, not inside the catch: an OOM is a FATAL, not an
-      // exception, so this `try` cannot see it. And `isFile()` before the
-      // size, because size is meaningless for anything else — the same
-      // symlink pointed at /dev/zero stats at 0 and reads for ever.
-      const st = statSync(abs);
-      if (!st.isFile() || st.size > MANIFEST_CAP) continue;
+      lstatSync(candidate);
+    } catch {
+      continue; // no manifest at all
+    }
+    // Containment, not merely a size cap, and these two files were the only
+    // ones in the tool that had neither. `package.json` is git-trackable as
+    // a symlink (mode 120000), so `package.json -> ../outside/evil.json`
+    // ships in a clone and needs no config: measured, an external
+    // `dependencies` key reclassified an in-repo referent as a package and
+    // dropped it out of `dead.mjs`'s report entirely. The read reaches
+    // outside the tree AND changes the finding.
+    const abs = contained(root, candidate);
+    if (!abs) {
+      // `contained` returns null for a link out of the tree, a broken link and
+      // a permission error alike, and it cannot tell them apart — so neither
+      // does this line. Naming all three beats naming the wrong one.
+      skipped.push({ file, reason: 'does not resolve to a path inside the repo (a link out of the tree, a broken link, or no permission)' });
+      continue;
+    }
+    let st;
+    try {
+      // Before the read, not inside a catch: an OOM is a FATAL, not an
+      // exception, so no `try` can see it. And `isFile()` before the size,
+      // because size is meaningless for anything else — the same symlink
+      // pointed at /dev/zero stats at 0 and reads for ever.
+      st = statSync(abs);
+    } catch {
+      skipped.push({ file, reason: 'could not be stat\'d' });
+      continue;
+    }
+    if (!st.isFile()) {
+      skipped.push({ file, reason: 'is not a regular file' });
+      continue;
+    }
+    if (st.size > MANIFEST_CAP) {
+      skipped.push({
+        file,
+        reason: `is ${(st.size / 1e6).toFixed(1)}MB; the limit is ${MANIFEST_CAP / 1e6}MB`,
+      });
+      continue;
+    }
+    try {
       const json = JSON.parse(readFileSync(abs, 'utf8'));
       for (const field of fields) {
         for (const name of Object.keys(json[field] ?? {})) names.add(name);
       }
-    } catch { /* absent or unparseable — the filter simply does not apply */ }
+    } catch {
+      // Unparseable stays silent, deliberately. A half-written or JSON5-ish
+      // manifest is a repo's own business and the cost is the documented one —
+      // a few extra entries in a bucket a human reads. What is announced above
+      // is only the case where THIS TOOL refused a file it could have read.
+    }
   }
-  return names;
+  return { names, skipped };
+}
+
+/**
+ * The three skips that used to happen without a word, said once per run.
+ *
+ * One function rather than three blocks per script, because the scripts must
+ * AGREE about them: excluded-by-config is a different fact from
+ * absent-from-the-repo, and a referent that reads ABSENT in `dead` and
+ * `referent-missing` in `stale` for two different unstated reasons is worse
+ * than either alone. There is one wording, so there is one fact.
+ *
+ * stderr, not stdout, and before anything else: `--json` callers get these too,
+ * and a report that is already a document should not have prose spliced into
+ * it. Each one also reaches the `--json` payload as a field, so a consumer
+ * parsing the document alone is not told less than a human reading the text.
+ *
+ * Non-goals, so this is not read as more than it is:
+ *  - It does NOT detect suppression, and cannot know intent. A repo that
+ *    legitimately links its docs in from elsewhere gets the symlink line on
+ *    every run, exactly like one hiding a file behind a link.
+ *  - An unmatched `ignore` entry is NOT an error and must never become one. A
+ *    repo legitimately carries an entry for a directory it has not created
+ *    yet, or one that exists only on another branch.
+ *  - The seven names in `DEFAULTS.ignore` are never reported, however they got
+ *    into the list. Most repos have no `vendor`, `target` or `.next`, so the
+ *    first draft of this check fired on every clean fixture in the suite; a
+ *    check that cries wolf on the default configuration is worse than no
+ *    check. The cost is a false negative — a repo that means `dist` and has
+ *    genuinely lost it is not told — which is the harmless direction.
+ *  - In walk mode an entry nested under another ignored entry is marked
+ *    covered rather than tested, because the descent stopped above it. That is
+ *    the safe direction — silence on a redundant-but-legitimate config — and
+ *    it means the check is weaker in walk mode than in git mode.
+ *  - It says nothing about a manifest that is present and unparseable. That is
+ *    the repo's own business and the filter simply does not apply, which is
+ *    what it always did.
+ */
+export function warnIndexSkips(index) {
+  if (!index) return;
+  const { droppedSymlinks = [], unusedIgnores = [], depsSkipped = [] } = index;
+  if (droppedSymlinks.length) {
+    process.stderr.write(
+      `todokeeper: ${droppedSymlinks.length} symlink(s) were not scanned: `
+      + `${notedList(droppedSymlinks)}. A link's own content is its target string, and this tool `
+      + 'does not follow one — so a doc reached only through a link is absent from every '
+      + 'verdict below.\n',
+    );
+  }
+  if (unusedIgnores.length) {
+    process.stderr.write(
+      `todokeeper: ${unusedIgnores.length} \`ignore\` entr${unusedIgnores.length === 1 ? 'y' : 'ies'} `
+      + `in .todokeeper.json matched nothing: ${notedList(unusedIgnores)}. `
+      + 'Not an error — an entry for a directory that does not exist yet, or exists on another '
+      + 'branch, is legitimate. But a typo looks exactly like protection, so check the spelling.\n',
+    );
+  }
+  for (const { file, reason } of depsSkipped) {
+    process.stderr.write(
+      `todokeeper: ${safeField(file)} was not read because it ${safeField(reason)}. `
+      + 'Referents naming a declared dependency are not recognised as such, so a few may appear '
+      + 'below as missing repo files.\n',
+    );
+  }
 }
 
 /** Is this referent a path INTO a declared dependency rather than into the repo? */
@@ -1589,11 +1705,26 @@ export function lastCommitChangingPhrase(root, phrase, pathspecs) {
  * is gone, which invites deleting a live entry. They cannot disagree if there
  * is only one predicate.
  */
+export const normaliseIgnoreEntry = (raw) => String(raw).replace(/^\.\//, '').replace(/\/+$/, '');
+
+/**
+ * The seven names this tool ships in `DEFAULTS.ignore`, for the one question
+ * `compileIgnore` cannot answer afterwards: is an entry that matched nothing
+ * worth telling anybody about?
+ *
+ * It is not the same question as "did the repo write it". A user `ignore` array
+ * REPLACES the defaults rather than extending them, so the ordinary way to add
+ * one entry is to copy all seven and append — this repo's own enumeration
+ * fixture does exactly that. Provenance therefore does not separate a shipped
+ * name from a repo-authored one, and only the NAME does.
+ */
+const SHIPPED_IGNORE = new Set(DEFAULTS.ignore.map(normaliseIgnoreEntry));
+
 export function compileIgnore(list) {
   const names = new Set();
   const paths = [];
   for (const raw of list || []) {
-    const entry = String(raw).replace(/^\.\//, '').replace(/\/+$/, '');
+    const entry = normaliseIgnoreEntry(raw);
     if (!entry) continue;
     if (entry.includes('/')) paths.push(entry);
     else names.add(entry);
@@ -1605,18 +1736,82 @@ export function compileIgnore(list) {
  * The entry excluding `path`, or null. `path` is repo-relative and
  * `/`-separated. Names are checked before paths so the reported suppressor
  * stays the same string a pre-path config would have reported.
+ *
+ * `used`, when passed, is a Set that every entry matching this path is added
+ * to — which is how the caller learns that some entry matched NOTHING, the
+ * failure a typo'd `web/test-resluts` produces: it passes every shape check
+ * `loadConfig` applies and then excludes nothing, reading exactly like
+ * protection. Recording is a parameter rather than a second function on
+ * purpose. One compiled matcher and ONE predicate serve the enumeration and
+ * the classifier, because when they disagree a file that was never indexed is
+ * reported as PATH-MISSING — an affirmative claim that something on disk is
+ * gone. A separate "did this entry match anything" routine would be exactly
+ * that second predicate, free to drift.
+ *
+ * The return value is identical either way: the first NAME match if there is
+ * one, else the first path match. Passing `used` only costs the early exit,
+ * and only on a path that is actually excluded.
  */
-export function ignoredBy(path, matcher) {
+export function ignoredBy(path, matcher, used) {
   if (!matcher) return null;
   const p = String(path).replace(/^\.\//, '').replace(/\/+$/, '');
   if (!p) return null;
+  let first = null;
   for (const seg of p.split('/')) {
-    if (matcher.names.has(seg)) return seg;
+    if (matcher.names.has(seg)) {
+      if (first === null) first = seg;
+      if (!used) return first;
+      used.add(seg);
+    }
   }
   for (const prefix of matcher.paths) {
-    if (p === prefix || p.startsWith(`${prefix}/`)) return prefix;
+    if (p === prefix || p.startsWith(`${prefix}/`)) {
+      if (first === null) first = prefix;
+      if (!used) return first;
+      used.add(prefix);
+    }
   }
-  return null;
+  return first;
+}
+
+/**
+ * How many suppressed or dropped items a report names before it stops.
+ *
+ * `ignore` is deliberately unbounded — `loadConfig` resolves each entry once
+ * into a Set and an array, and neither multiplies. Printing one line per
+ * unmatched entry would make it multiply into the report, so the LIST is
+ * capped and the COUNT is not: an operator learns the true number either way,
+ * and a config with 40,000 dead entries cannot bury the finding above it.
+ */
+export const MAX_NOTED = 20;
+
+/**
+ * `first N, then "+M more"` — the shape every capped list in a report uses.
+ *
+ * Each item is JSON-quoted, and that is a security property rather than a
+ * style choice. The separator is `, ` and the truncation suffix is
+ * `, +M more`, so an UNQUOTED item named `x, +9 more` renders as a second
+ * entry followed by a truncation notice that never happened. `safeField`
+ * cannot see it — there is no control byte involved, only ordinary commas —
+ * and forging what the run prints is half this tool's threat model. Backtick
+ * quoting does not close it either: a repo-supplied path may contain a
+ * backtick, and then the item ends its own quoting. `JSON.stringify` is the
+ * cheap quoting an item cannot emit its way out of, because it escapes the
+ * quote and the backslash.
+ *
+ * Order matters. `JSON.stringify` first, so tab/CR/LF leave as two-character
+ * escapes and `safeField` finds no raw ones to re-escape; `safeField` second,
+ * so the bidi overrides and the C1 block that `JSON.stringify` emits RAW are
+ * still caught. Reversing the two double-escapes every backslash.
+ *
+ * The count before the colon is computed from `.length` at the call site and
+ * stays truthful either way; this stops the LIST from lying on its own.
+ */
+export function notedList(items) {
+  const shown = items.slice(0, MAX_NOTED)
+    .map((item) => safeField(JSON.stringify(String(item))))
+    .join(', ');
+  return items.length > MAX_NOTED ? `${shown}, +${items.length - MAX_NOTED} more` : shown;
 }
 
 /**
@@ -1720,7 +1915,7 @@ function gitEnumerate(root) {
 }
 
 /** The plain recursive walk. Used when `gitEnumerate` returns null. */
-function walkDisk(root, matcher) {
+function walkDisk(root, matcher, used, symlinks) {
   const out = [];
   // The repo-relative prefix travels with the directory so a path-shaped
   // `ignore` entry can be matched during descent rather than after it.
@@ -1738,7 +1933,18 @@ function walkDisk(root, matcher) {
       // Before the isDirectory() branch on purpose: `ignore` suppresses FILES
       // as well as directories, which is how a repo keeps `.env`, `.env.keys`
       // or `SESSION.md` out of the scan without inventing a directory for them.
-      if (ignoredBy(path, matcher)) continue;
+      if (ignoredBy(path, matcher, used)) {
+        // This descent stops here, so any entry NAMING something below this
+        // path will never be tested and would read as "matched nothing". It is
+        // covered, not dead — `ignore: ["node_modules", "node_modules/.cache"]`
+        // is a legitimate, redundant config and must not be reported as a typo.
+        if (item.isDirectory() && used) {
+          for (const prefixEntry of matcher.paths) {
+            if (prefixEntry.startsWith(`${path}/`)) used.add(prefixEntry);
+          }
+        }
+        continue;
+      }
       const abs = join(dir, item.name);
       // A Dirent reports the entry's OWN type, so a symlink is neither a
       // directory nor a file and falls through both arms unfollowed. That is
@@ -1746,6 +1952,7 @@ function walkDisk(root, matcher) {
       // agreeing with the lstat in listFiles. Never switch these to statSync.
       if (item.isDirectory()) stack.push([path, abs]);
       else if (item.isFile()) out.push(abs);
+      else if (item.isSymbolicLink() && symlinks) symlinks.push(path);
     }
   }
   return out;
@@ -1774,14 +1981,24 @@ function walkDisk(root, matcher) {
 export function listFiles(root, ignore) {
   const matcher = compileIgnore(ignore);
   const key = resolve(root);
+  const used = new Set();
+  const droppedSymlinks = [];
+  const declared = [...matcher.names, ...matcher.paths];
+  // `!SHIPPED_IGNORE.has` is the whole difference between a check and noise:
+  // most repos have no `vendor`, `target` or `.next`, so without it the note
+  // fired on every clean fixture in the suite — including this tool's own.
+  const unusedIgnores = () => declared.filter((e) => !used.has(e) && !SHIPPED_IGNORE.has(e));
   if (!gitListingCache.has(key)) gitListingCache.set(key, gitEnumerate(key));
   const git = gitListingCache.get(key);
   if (!git) {
-    return { mode: 'walk', files: walkDisk(key, matcher), gitIgnored: null, matcher };
+    const files = walkDisk(key, matcher, used, droppedSymlinks);
+    return {
+      mode: 'walk', files, gitIgnored: null, matcher, droppedSymlinks, unusedIgnores: unusedIgnores(),
+    };
   }
   const files = [];
   for (const path of git.files) {
-    if (ignoredBy(path, matcher)) continue;
+    if (ignoredBy(path, matcher, used)) continue;
     const abs = join(key, path);
     try {
       // lstat, never stat. Git stores a symlink as a blob holding its target
@@ -1794,14 +2011,23 @@ export function listFiles(root, ignore) {
       // read. A link's own content is its target string -- nothing worth
       // scanning -- so drop it, and both enumeration modes stay in agreement.
       const st = lstatSync(abs);
-      if (st.isSymbolicLink()) continue;
+      // Dropped, and now SAID. A repo that reaches a real doc through a link
+      // loses it from the scan, and until this line it was told nothing — the
+      // one error this tool exists to prevent is calling a live referent dead,
+      // and an unscanned target does exactly that. Still a drop, not a follow:
+      // resolving the target and re-checking it against `.gitignore` means a
+      // second ignore evaluation written by us, which fails in the direction
+      // that READS the file it was meant to skip.
+      if (st.isSymbolicLink()) { droppedSymlinks.push(path); continue; }
       if (!st.isFile()) continue;
     } catch {
       continue;
     }
     files.push(abs);
   }
-  return { mode: 'git', files, gitIgnored: git.ignored, matcher };
+  return {
+    mode: 'git', files, gitIgnored: git.ignored, matcher, droppedSymlinks, unusedIgnores: unusedIgnores(),
+  };
 }
 
 export function walkFiles(root, ignore) {
