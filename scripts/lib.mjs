@@ -1257,10 +1257,29 @@ const HEADINGLESS_MIN_LINES = 20;
  * setext headings, bare-CR line endings and files that genuinely have none, so
  * the message names those and does not repeat the one that is fixed.
  *
- * The 20-non-blank-line floor is a judgement, not a measurement: a short flat
- * deferred-work file with no headings is an ordinary way to keep one, and
- * warning about it would be noise on a legitimate configuration. Above that it
- * is worth a line of stderr. Nothing calibrated this number.
+ * The 20-non-blank-line floor exists because a short flat deferred-work file
+ * with no headings is an ordinary way to keep one, and warning about it would
+ * be noise on a legitimate configuration. Above that it is worth a line of
+ * stderr.
+ *
+ * MEASURED, 2026-08-22, over 923 markdown and text files in 30 repositories,
+ * enumerated the way `dead.mjs` enumerates. 188 of them (20.4%) parse to a
+ * single headingless section: 155 fall below this floor and stay silent, 33
+ * reach it and would warn. The silent bucket is not close to the boundary —
+ * 137 of the 155 are single-line files, and the largest is a 17-line
+ * `LICENSE.md` that genuinely has no headings. The shapes this message exists
+ * to name are on the other side: only three files in the 923 carry a setext
+ * underline outside front matter, only two of those are headingless — two font
+ * licence files at 74 and 75 non-blank lines — and both are warned. The two
+ * headingless bare-CR files are `robots.txt` at two lines each, correctly
+ * silent. So on this corpus the floor loses no parse failure at all.
+ *
+ * NON-GOAL, and it is the reason the number is not now called calibrated: that
+ * corpus barely contains the shape the boundary separates. Three setext files
+ * in 923 is no mass anywhere near 20 lines, so the measurement can show the
+ * floor is costing nothing today and cannot show that 20 is the right place
+ * for it. A corpus of setext-written deferred-work files would answer that;
+ * this one cannot, and no repo here is a sample of anyone else's habits.
  */
 export function warnIfHeadingless(secs, text, label) {
   if (secs.length !== 1 || secs[0].heading !== null) return false;

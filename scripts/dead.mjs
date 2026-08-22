@@ -147,6 +147,35 @@ const files = walkFiles(root, config.ignore)
 // and still exhausts the heap. The total cap is what actually bounds this, and
 // it is announced rather than silent — a truncated scan that reported like a
 // complete one would call a live referent ABSENT.
+//
+// MEASURED, 2026-08-22, in both directions, because the budget was chosen to
+// sit below a default Node heap and nothing had checked either end of that.
+//
+// Below: across 30 repositories on one machine the largest corpus this walk
+// holds is 16.7MB over 1,163 text files — 6.5% of the budget — and the next
+// is 11.8MB. Not one was truncated, so the announcement path above has still
+// never run outside a fixture, and the cap is nowhere near firing on ordinary
+// work.
+//
+// Above: driven to 254,700,000 bytes held (99.5% of the cap) with a single
+// referent, so the figure is the read and not the scan. Peak RSS — `ru_maxrss`,
+// so KiB — was 315,240 over 130 files of ASCII, 355,608 for the same bytes in
+// Greek, 566,712 over 100,000 files of 2,547 bytes, and 612,748 for 100,000
+// Greek files at 4.95 seconds: the worst of the four, and 627,453,952 bytes.
+// Node's default heap ceiling on that machine is 4,496,293,888 bytes, so a
+// saturated budget peaks at 14.0% of it. The guess was right and conservative.
+//
+// Both units are spelled out because the first version of this comment divided
+// KiB by decimal MB and printed 13.6%. The rest of this file is decimal
+// (`TOTAL_CAP / 1e6` prints "256MB"), `ru_maxrss` is not, and a ratio between
+// the two conventions is wrong by 2.4% while looking entirely ordinary.
+//
+// The shape matters more than the charset: the same 254.7MB costs 315MB in 130
+// files and 567MB in 100,000, because the per-file overhead nearly doubles it.
+// That is the hundred-thousand-small-files case this comment already named, and
+// it is now the measured worst rather than the asserted one. What none of this
+// covers: one machine, one V8, and a per-referent scan whose cost sits on top
+// of these figures rather than inside them.
 const FILE_CAP = 2_000_000;
 const TOTAL_CAP = 256_000_000;
 const contents = new Map();

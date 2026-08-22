@@ -486,7 +486,13 @@ used to credit it with the whole range.
 **`dead.mjs` reads the repo into memory and stops at 256MB.** When it stops it
 says how many files it skipped, and `ABSENT` is then incomplete by that many
 files. Narrow `ignore` and re-run rather than reading a truncated report as a
-clean one.
+clean one. It is a long way from firing on ordinary work — measured over 30
+repositories, the largest corpus held was 16.7MB, 6.5% of the budget, and none
+was truncated — so treat the announcement as a signal about the repo you were
+pointed at, not as routine. That is 30 repositories on ONE machine and one V8,
+which is a statement about what ordinary work looked like there and not a
+promise about the repo in front of you: if the announcement fires, believe it
+over this paragraph.
 
 **`node test/smoke.mjs` proves the branches execute, not that the verdicts are
 right.** Run it after any edit to `scripts/` — it takes under a second and needs
