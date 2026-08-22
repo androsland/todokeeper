@@ -494,7 +494,14 @@ throughout. Each guard, and what it does not cover:
 - **`dead.mjs` reads the repo into memory and stops at 256MB.** Past that it
   reports how many files went unscanned, and its `ABSENT` verdicts are incomplete
   by exactly that many files. Narrow `ignore` and re-run rather than reading the
-  truncated result.
+  truncated result. Measured at both ends: across 30 repositories the largest
+  corpus this walk holds is **16.7MB** over 1,163 files, 6.5% of the budget and
+  never once truncated; driven to a saturated 254.7MB with one referent it peaks
+  at **612,748 KiB (627.5MB)** resident in the worst of four shapes (100,000
+  small non-ASCII files), against a 4,496,293,888-byte default heap ceiling —
+  **14.0%** of it. The file COUNT costs more than the charset — the same bytes in
+  130 files peak at 315,240 KiB. What that does not cover: one machine, one V8,
+  and a per-referent scan whose cost sits on top of these figures.
 
 Four things these guards do **not** cover. The path check resolves and then
 reads, so a symlink swapped in between the two calls wins the race — an attacker

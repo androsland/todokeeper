@@ -125,15 +125,6 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   contract deliberately; revisit if lib.mjs ever gains a consumer that is not
   one of these three scripts.
 
-- **The 20-non-blank-line floor under the headingless warning is a judgement
-  with nothing behind it.** (found fixing the CRLF defect, 2026-08-19) Below it
-  `warnIfHeadingless` stays silent, because a short flat deferred-work file with
-  no headings is an ordinary way to keep one and warning about it is how a
-  warning gets ignored. Nothing calibrated the number against real repos, so a
-  19-line file that failed to parse gets the silent 0% the warning exists to
-  prevent. Both directions are tested; neither test says the boundary is in the
-  right place.
-
 - **Setext headings are named as a cause and still not parsed.** (found fixing
   the CRLF defect, 2026-08-19) A file whose headings are underlined with `===`
   or `---` yields none, so completed mass reads 0% and the archive sweeps as
@@ -141,7 +132,14 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   the only remaining one that a well-formed markdown file can hit. The warning
   names it and `README.md` carries it as a non-goal, which is honest but is not
   support. Supporting it means a second heading pass with a lookahead, and the
-  cost is that `---` is also a thematic break and a front-matter fence.
+  cost is that `---` is also a thematic break and a front-matter fence. That
+  last one is not theoretical, and the measurement of the headingless floor hit
+  it first try: a detector that looked one line back scored 21 headingless files
+  as setext, and 19 of them were YAML front matter whose closing `---` sits under
+  a `description:` line. Excluding front matter by SPAN rather than by line
+  position took the real count to two. Whoever implements this pass should
+  expect the front-matter fence to be the dominant false positive, not the
+  thematic break. (measured, 2026-08-22)
 
 - **The scanned corpus is never normalised, and only `indexOf` keeps that
   safe.** (found fixing the CRLF defect, 2026-08-19) `dead.mjs` reads repo files
@@ -502,13 +500,6 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
   through different call shapes and unifying them is a refactor, not a fix.
   (self-review, 2026-08-17)
 
-- **The 256MB read budget in `dead.mjs` is a guess, not a measurement.** It was
-  chosen to sit below a default Node heap; nothing measured what the scanned
-  repos actually peak at, so the headroom is unknown in both directions. No repo
-  has hit it, which also means the truncation path and its stderr warning have
-  never run outside a synthetic test.
-  (2026-08-17)
-
 - **A target still costs ~10x its size, and the `TARGET_CAP` skip message still
   says "several times".** The generator took the 64MB fixture from 19x to about
   10x (`dead.mjs` 635,228 kB, `measure.mjs` 662,076 kB on 63,999,792 bytes), so
@@ -664,7 +655,7 @@ Everything older than these moved to `TODOS-DONE.md` when this file crossed the
 entries still impose were lifted into `CLAUDE.md` on the way out.
 
 This section was cut to the five most recent at that split and has grown back
-to fifteen since, so it is **not** "the five most recent" any more and the line
+to sixteen since, so it is **not** "the five most recent" any more and the line
 saying it was has been removed rather than left to read as current. Count it,
 do not increment it: this line said eleven while the file held twelve, because
 each sweep added one to the number it found written down instead of running
@@ -672,6 +663,52 @@ each sweep added one to the number it found written down instead of running
 cut is blocked on a different fact: `## Completed` has no entries for the work
 merged as PRs #6 and #7, and archiving a stale section keeps five older entries
 while archiving the recent ones. Write those two first, then split.
+
+- **Both unmeasured thresholds were measured, and both stand.** The 256MB read
+  budget in `dead.mjs` and the 20-non-blank-line floor under `warnIfHeadingless`
+  were each filed as a judgement with nothing behind it, and each is now
+  measured in the direction that could have falsified it. Same corpus for both:
+  30 repositories on one machine, enumerated the way `dead.mjs` enumerates.
+
+  The budget was checked at both ends, because "chosen to sit below a default
+  Node heap" is a claim about the top and says nothing about the bottom. Bottom:
+  the largest corpus the walk holds across the 30 is **16.7MB over 1,163 text
+  files**, 6.5% of the budget, next largest 11.8MB, and not one repo was
+  truncated — so the announcement path is still fixture-only, exactly as filed.
+  Top: driven to **254,700,000 bytes held, 99.5% of the cap**, with a single
+  referent so the number is the read and not the scan. Peak RSS 315,240 KB over
+  130 ASCII files, 355,608 KB for the same bytes in Greek, 566,712 KB over
+  100,000 files of 2,547 bytes, and **612,748 KiB** for 100,000 Greek files at
+  4.95s — the worst of the four, quoted here for that reason. Node's default
+  heap ceiling on that machine is 4,496,293,888 bytes, so a saturated budget
+  peaks at **14.0%** of it. The security round caught the first version of that
+  sentence saying 13.6%: `ru_maxrss` is KiB, the rest of `dead.mjs` prints
+  decimal MB, and dividing one by the other is wrong by 2.4% and looks fine.
+  Both units are now spelled out at every site. The surprise was not the charset but the file COUNT: identical bytes
+  cost 315MB in 130 files and 567MB in 100,000, which is the
+  hundred-thousand-small-files case the comment above the cap already named and
+  had never run.
+
+  The floor came out cleaner than expected. Of **923 markdown and text files**,
+  188 (20.4%) parse to a single headingless section; 155 sit below the floor and
+  stay silent, 33 reach it and warn. The silent bucket is nowhere near the
+  boundary — 137 of the 155 are single-line files and the largest is a 17-line
+  `LICENSE.md` with genuinely no headings. The shapes the warning exists for are
+  all on the warned side: three files in 923 carry a setext underline outside
+  front matter, two of those are headingless — font licences at 74 and 75
+  lines — and both warn; the two headingless bare-CR files are `robots.txt` at
+  two lines and are correctly silent. Zero parse failures fall in the silent
+  bucket.
+
+  Neither number moved, and the docblocks now say measured rather than guessed,
+  with the limits written beside them: one machine and one V8 for the budget,
+  and for the floor a corpus that contains almost none of the shape the boundary
+  separates — three setext files in 923 is no mass near 20 lines, so this shows
+  the floor costs nothing today and cannot show that 20 is the right place for
+  it. The detour that produced the setext caution filed above is the same
+  measurement: the first pass over-counted setext by 19, because a front-matter
+  closer reads as an underline one line back.
+  (bundle 10, 2026-08-22)
 
 - **Entry bodies now leave the tool through an escaping helper, and the helper
   that was supposed to already cover them never did.** `measure.mjs --bodies`
