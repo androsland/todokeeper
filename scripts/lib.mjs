@@ -124,6 +124,84 @@ export function safe(value) {
 }
 
 /**
+ * The invisible-format list that every sink below shares, and the two escapers
+ * that spell one out.
+ *
+ * Three sinks used to carry three hand-maintained lists that agreed on bidi and
+ * on nothing else, which is exactly how a widening reaches one sink and misses
+ * the other two. They now differ only in their LAYOUT half — what counts as
+ * structure at that particular sink — and share this list for everything
+ * invisible. A codepoint added here is escaped by all three or by none.
+ *
+ * The list is CLOSED and every range is here for a named reason, because the
+ * Unicode category is not the test. Escaping the whole format category would
+ * mangle legitimate Arabic (U+0600-U+0605 prefix numerals), Kaithi, Egyptian
+ * and musical notation — the same mistake as banning non-ASCII outright, which
+ * is the one thing "controls, never a charset" exists to prevent.
+ *
+ *   U+061C U+200E U+200F U+202A-U+202E   reorder a rendered line
+ *   U+2028 U+2029                        forge a line break in a renderer
+ *   U+200B U+2060-U+2069 U+FEFF          split or join words invisibly
+ *   U+206A-U+206F                        deprecated bidi format characters
+ *   U+FFF9-U+FFFB                        hide text inside an annotation
+ *   U+E0000-U+E007F                      encode arbitrary ASCII invisibly
+ *
+ * The last range is why this widened past bidi at all. A body printed by
+ * `measure.mjs --bodies` is repo prose read by an AGENT as well as by a person,
+ * and the tag block is a complete invisible ASCII alphabet: a repo can write a
+ * sentence in it that no reader sees and a model still reads. Every other range
+ * here costs a reader a misread line; that one costs an instruction.
+ *
+ * Deliberately NOT escaped, stated as a non-goal rather than left as an
+ * oversight: U+200C ZWNJ and U+200D ZWJ, which Persian, Devanagari and Bengali
+ * need to render correctly and which every emoji sequence is built from;
+ * U+00AD, U+180E and the script-specific format characters named above; and the
+ * variation selectors U+FE00-U+FE0F and U+E0100-U+E01EF, which are marks rather
+ * than format characters. ZWNJ and ZWJ can still hide a word boundary, and that
+ * is accepted — escaping them would corrupt the scripts that require them,
+ * which is a larger failure than the one it prevents.
+ */
+const INVISIBLE_FORMAT = /[\u061C\u200B\u200E\u200F\u2028-\u202E\u2060-\u206F\uFEFF\uFFF9-\uFFFB\u{E0000}-\u{E007F}]/gu;
+
+/**
+ * The TEXT spelling: `\uXXXX` for the BMP, `\u{XXXXX}` above it.
+ *
+ * Astral codepoints get the braced form because these sinks are read by a
+ * person, and `\u{e0041}` names the tag block at a glance where a surrogate
+ * pair spells one character as two numbers that resemble neither it nor each
+ * other. `jsonEscape` below cannot make that choice — JSON has no braced
+ * escape — which is the whole reason there are two of these.
+ */
+function uEscape(ch) {
+  const cp = ch.codePointAt(0);
+  return cp > 0xffff
+    ? `\\u{${cp.toString(16)}}`
+    : `\\u${cp.toString(16).padStart(4, '0')}`;
+}
+
+/**
+ * The JSON spelling: one `\uXXXX` per UTF-16 code unit, so an astral codepoint
+ * comes out as its surrogate pair.
+ *
+ * `\u{XXXXX}` is valid JavaScript and is NOT valid JSON — emitting it here
+ * would produce a document that `JSON.parse` rejects, turning a hardening
+ * change into a corrupted `--json` sink. A surrogate pair is the canonical JSON
+ * spelling and parses back to the identical codepoint, so `--json` stays what
+ * it claims to be: lossless, escaped rather than stripped.
+ */
+function jsonEscape(match) {
+  let out = '';
+  for (let i = 0; i < match.length; i += 1) {
+    out += `\\u${match.charCodeAt(i).toString(16).padStart(4, '0')}`;
+  }
+  return out;
+}
+
+function escapeInvisible(text) {
+  return text.replace(INVISIBLE_FORMAT, uEscape);
+}
+
+/**
  * `safe()` for a value interpolated into ONE report line — which is every print
  * site in this tool.
  *
@@ -136,28 +214,111 @@ export function safe(value) {
  * FILENAME, a `targets` entry in `.todokeeper.json`, and a git commit SUBJECT,
  * which the docblock above already singles out as the widest path.
  *
- * Bidi controls ride along, and not because they are control characters —
- * U+202E and the isolates are ordinary format characters that reorder a
- * rendered line, so a referent can display as something other than what it
- * names. The defect is rendering manipulation; the category was never the point.
+ * The invisible half is `INVISIBLE_FORMAT` above and is shared with the other
+ * two sinks, and not because those codepoints are control characters — U+202E
+ * and the isolates are ordinary FORMAT characters that reorder a rendered line,
+ * so a referent can display as something other than what it names. The defect
+ * is rendering manipulation; the category was never the point. What is left
+ * here is the LAYOUT half, the only part genuinely specific to a one-line sink.
  *
  * Escaped rather than stripped, so the operator can see that something was
- * there. `safe()` stays correct for a genuinely multi-line body, of which this
- * tool currently prints none. `--json` stays on `jsonSafe`: `JSON.stringify`
+ * there. `--json` stays on `jsonSafe`: `JSON.stringify`
  * already escapes tab, CR and LF, and re-escaping them here would corrupt
  * legitimate values.
  */
-const FIELD_UNSAFE = /[\t\n\r\u202A-\u202E\u2066-\u2069]/g;
+const FIELD_LAYOUT = /[\t\n\r]/g;
 
 export function safeField(value) {
   if (typeof value !== 'string') return value;
-  return safe(value).replace(
-    FIELD_UNSAFE,
-    (c) => `\\u${c.codePointAt(0).toString(16).padStart(4, '0')}`,
-  );
+  return escapeInvisible(safe(value).replace(FIELD_LAYOUT, uEscape));
 }
 
-/** The bytes `JSON.stringify` leaves raw: DEL and the whole C1 block. */
+/**
+ * `safe()` for a value printed as a genuinely MULTI-LINE body.
+ *
+ * The docblock above says "`safe()` stays correct for a genuinely multi-line
+ * body, of which this tool currently prints none". The second half stopped
+ * being true when `measure.mjs --bodies` landed, and the first half was never
+ * true: `safe()` strips control characters and bidi controls are not control
+ * characters — that is stated four paragraphs up as the reason `safeField`
+ * carries them, and it applies identically here. A body is the WIDEST path in
+ * the tool, because it is repo prose reproduced verbatim rather than a
+ * filename or a lead, so shipping it through the one helper that lets U+202E
+ * past would have undone the reason bidi was added to `safeField` at all.
+ *
+ * Line structure is the whole point of a body, so LF survives, and so does tab,
+ * which is indentation inside a fenced block. CR does not: `readTarget`
+ * normalises CRLF at the read boundary, so a surviving lone CR is already
+ * anomalous, and it is the exact character the `safeField` docblock names as
+ * sufficient on its own to redraw a line the terminal has drawn.
+ *
+ * This is a separate FUNCTION rather than a parameter on `safeField`, because
+ * the two differ in what counts as layout and that is a judgement about the
+ * sink, not a flag. A caller choosing wrongly between them is the failure; a
+ * caller choosing between `true` and `false` is the same failure with less to
+ * read. What they do NOT differ in is the invisible-format set: that is
+ * `INVISIBLE_FORMAT`, shared, precisely so this docblock's own history — a
+ * sink shipped with a narrower list than its neighbours — cannot repeat.
+ */
+const BODY_LAYOUT = /\r/g;
+
+export function safeBody(value) {
+  if (typeof value !== 'string') return value;
+  return escapeInvisible(safe(value).replace(BODY_LAYOUT, uEscape));
+}
+
+/**
+ * `safeBody()` plus a quoting frame, for the one sink that prints many bodies
+ * under headers of its own.
+ *
+ * `measure.mjs --bodies` writes a `=== path — heading — N chars` line above each
+ * body. Escaping alone does not make that line trustworthy: a body may contain
+ * a line that looks exactly like one, and the first version of that report
+ * shipped with the forgery reproduced end to end — a fixture whose body held
+ * `=== TODOS.md — Open — 40 chars` rendered a fabricated entry that read as
+ * a separate, legitimate finding. For a tool whose output an operator ACTS on,
+ * a forged finding is the worst thing it can print.
+ *
+ * Prefixing every line is the fix, and it is a fix rather than a mitigation:
+ * the header is the only text that reaches column 0, so no body can begin one.
+ * A diff and a quoted email do the same thing for the same reason.
+ *
+ * Non-goal: the frame means the printed body is no longer byte-identical to the
+ * file. That is the trade — the text sink was already lossy by design, since
+ * `safeBody` strips and escapes, and `--json` is the sink that carries the
+ * bytes. A body line that itself begins with the bar is merely indented twice;
+ * it still cannot reach column 0, so the guarantee does not depend on the bar
+ * being absent from repo prose.
+ */
+const BODY_QUOTE = '│ ';
+
+export function quoteBody(value) {
+  if (typeof value !== 'string') return value;
+  return safeBody(value)
+    .split('\n')
+    .map((line) => (line === '' ? '│' : BODY_QUOTE + line))
+    .join('\n');
+}
+
+/**
+ * What `JSON.stringify` leaves raw and this sink must not: DEL, the whole C1
+ * block, and every codepoint in `INVISIBLE_FORMAT`.
+ *
+ * The bidi half was added when `skills/next/SKILL.md` was found to tell the
+ * agent the opposite of the truth — "when the raw bytes are what matter, take
+ * them from `--json`, which escapes rather than strips", written two lines
+ * below a paragraph naming a bidi override inside an entry as the threat.
+ * Measured: `jsonSafe` emitted U+202E verbatim inside the string value, because
+ * a format character is neither C0 nor C1 and `JSON.stringify` has no opinion
+ * about it. The skill was pointing at the one sink that did not do the job.
+ *
+ * Escaping these here is lossless in the way that matters to this flag: a JSON
+ * parser decodes `\u202e` back to U+202E, so a consumer still recovers the
+ * repo's exact bytes, while an operator who dumps the output into a terminal
+ * sees six printable ASCII characters instead of a reordered line. An astral
+ * codepoint goes out as a surrogate pair rather than the braced form — see
+ * `jsonEscape`, where getting that wrong produces a document no parser accepts.
+ */
 const JSON_RAW_CONTROLS = /[\u007F-\u009F]/g;
 
 /**
@@ -177,10 +338,9 @@ const JSON_RAW_CONTROLS = /[\u007F-\u009F]/g;
  * verified rather than assumed this time.
  */
 export function jsonSafe(value) {
-  return JSON.stringify(value, null, 2).replace(
-    JSON_RAW_CONTROLS,
-    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
-  );
+  return JSON.stringify(value, null, 2)
+    .replace(JSON_RAW_CONTROLS, jsonEscape)
+    .replace(INVISIBLE_FORMAT, jsonEscape);
 }
 
 /**
@@ -388,6 +548,89 @@ export const MANIFEST_CAP = 1_000_000;
  */
 export const MAX_REFERENTS = 5_000;
 export const MAX_ENTRIES = 5_000;
+
+/**
+ * The two BODY caps, which exist because `measure.mjs --bodies` is the first
+ * thing in this tool that emits repo prose VERBATIM rather than a lead, a
+ * filename or a count.
+ *
+ * Every other cap here bounds one file or one count. These four bound a
+ * PRODUCT that nothing bounded before: entries times per-entry cost.
+ * `MAX_ENTRIES` caps the count at 5,000 and says nothing about size, and
+ * `measure.mjs` never imported it in the first place — it counts every entry in
+ * the file — so before this the only ceiling on total emitted body text was
+ * `TARGET_CAP`, which is 64MB PER TARGET and explicitly does not bound the set.
+ *
+ * It took two goes to actually bound that product, and the first version's
+ * docblock claimed this same sentence while leaving two factors free. Measured
+ * against the build that shipped it: an entry of 40,007 characters produced a
+ * record reading `chars 40007 | body 32000 | lead 40000`, because the record
+ * capped its body and copied its lead whole — the cap was defeated on exactly
+ * the entries it exists to bound. And the record COUNT stayed free while the
+ * budget bounded body TEXT, so a 6.8MB target of 300,000 entries retained
+ * 113,131 records carrying a heading, a lead and a count for entries whose body
+ * the budget had already refused to pay for. Measured on one fixture against
+ * one build with only these caps switched off: peak RSS 451,324 KB against
+ * 257,744 KB, and 1.49s against 1.09s. The same run without `--bodies` at all
+ * peaks at 194,228 KB, so the flag's overhead went from 2.32x to 1.33x. A cap
+ * on one factor of a product is not a cap on the product, which is why this
+ * paragraph quotes numbers instead of asserting a bound.
+ *
+ * Measured over the `TODOS.md` files on the machine this was written on — eight
+ * for the size columns, re-run over fifteen for the lead and record columns,
+ * quoting the worst of each column rather than the convenient one — all three
+ * worsts are the same file, a 434KB target:
+ *  - Longest single entry: 16,170 characters. Then 15,010, 11,177, 10,284,
+ *    4,766, 3,876, 3,763, 1,068.
+ *  - Total body text in one file: 430,085 characters. Then 117,405, 78,699,
+ *    54,295, 47,173, 44,906, 26,407, 8,633.
+ *  - Entry count: 250. Then 69, 49, 31, 30, 29, 29, 16. Over fifteen files:
+ *    284, 97, 92, 69, 67, 37, 30, 29.
+ *  - Longest entry LEAD, over fifteen files: 234 characters. Then 207, 202,
+ *    189, 186, 175, 172, 171, 170, 166. Median 67, over 820 entries.
+ * So `MAX_BODY_CHARS` sits at 2.0x the longest entry observed anywhere,
+ * `MAX_BODY_TOTAL` at 9.3x the largest total, `MAX_BODY_FIELD` at 4.3x the
+ * longest lead, and `MAX_BODY_RECORDS` at 17.6x the largest entry count.
+ *
+ * What they deliberately do NOT do:
+ *  - They count UTF-16 code units, not bytes. A CJK or emoji body reaches the
+ *    same cap at up to four bytes per unit, so the byte ceiling these imply is
+ *    higher than the number reads — the same gap the heading-scan cap already
+ *    records, where non-ASCII cost ~40x more at an identical cap.
+ *  - They bound what is EMITTED, not what is parsed. `entries()` still
+ *    materialises every entry's `text` in full; these stop it reaching stdout
+ *    and stop the retained array growing, and neither is a memory guarantee
+ *    about the parse itself.
+ *  - `MAX_BODY_FIELD` bounds the lead and the heading COPIED INTO a body
+ *    record. It is not a cap on headings anywhere else: the per-section
+ *    inventory holds `sec.heading` whole, as it did before any of this, and
+ *    that one is bounded by `TARGET_CAP` and by there being one per section.
+ *    The reason to cap it here and not there is arithmetic — a heading
+ *    reprinted once per entry is a product, and printed once per section is
+ *    not.
+ *  - They bound INPUT characters, not output bytes, and the gap between the
+ *    two is the largest number this tool produces. `MAX_BODY_TOTAL` counts the
+ *    body text taken FROM the file; the frame, the per-entry header, the two
+ *    capped fields on every record and the `\uXXXX` expansion all sit outside
+ *    it, and the last of those is six output characters per input one.
+ *    Measured at the caps on a deliberately worst-case 32MB target — 5,000
+ *    sections, 1,000-character headings, every body character a U+202E that
+ *    escapes — `--bodies` emitted 29.1MB at 298,836 KB peak RSS, and
+ *    `--bodies --json` emitted 65.7MB at 899,924 KB, against 6.1MB and
+ *    195,988 KB for the same run without the flag. That ceiling is FIXED by
+ *    these caps rather than growing with the repo, which is the property that
+ *    matters; it is quoted here because the arithmetic above discusses a
+ *    4,000,000-character budget and a reader would otherwise size the output
+ *    from that number.
+ *  - `MAX_BODY_TOTAL` is a budget spent in entry order, so which entries get
+ *    truncated depends on where they sit in the file. That is arbitrary and is
+ *    the price of a bound that does not need a second pass; the announcement is
+ *    the remedy, on stderr AND in the report, as with every other cap here.
+ */
+export const MAX_BODY_CHARS = 32_000;
+export const MAX_BODY_TOTAL = 4_000_000;
+export const MAX_BODY_FIELD = 1_000;
+export const MAX_BODY_RECORDS = 5_000;
 
 /**
  * The provenance cap, and the reason it is separate from the two above.

@@ -26,7 +26,10 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/dead.mjs"        # referents that no longer 
 ```
 
 All three take `--root <dir>` and `--json`. `stale.mjs` takes `--min-days N` to
-raise the gap that counts as suspect.
+raise the gap that counts as suspect. `measure.mjs` takes `--bodies` to print
+every live entry's full text through an escaping helper — read entry prose that
+way rather than opening the file, and see the escaping section below for what
+the two output forms do differently.
 
 **Never eyeball the numbers.** The reason `measure.mjs` exists is that a
 maintainer estimated one repo's completed mass at 1.6% when it was 12.4% — wrong
@@ -466,10 +469,17 @@ them would be executed by your terminal rather than shown — for a tool that
 exists to print findings, that means a hostile repo could redraw a `SUSPECT`
 line to look clean. C0 and C1 are removed at every print sink. Tab, newline and
 carriage return are layout inside a quoted body and forgery on a one-line
-finding, so single-line sinks escape those three as well, plus the bidi
-overrides (U+202A–U+202E, U+2066–2069). Only control and format characters go:
-Greek, German and emoji are untouched. Use `--json` if you need the exact bytes — it escapes them
-rather than stripping them, so a parser recovers the original codepoint. That
+finding, so single-line sinks escape those three as well. Every sink then shares
+one invisible-format list: the bidi overrides, isolates and marks, the
+zero-width family, U+2028/U+2029, the annotation characters and the U+E0000 tag
+block, which is an invisible ASCII alphabet an agent still reads. Only control
+and format characters go, and not all of those — Greek, German, emoji and the
+ZWNJ/ZWJ that Persian and Devanagari need are untouched. A quoted body is the
+third sink: `measure.mjs --bodies` keeps newlines, because there the line
+structure is the content, escapes CR and the invisible-format list, and prefixes
+every line with `│ ` so its `===` header cannot be forged from inside a body.
+Use `--json` if you need the exact bytes — it escapes them rather than stripping
+them, so a parser recovers the original codepoint. That
 escaping is todokeeper's own: `JSON.stringify` covers C0 only, and this line
 used to credit it with the whole range.
 

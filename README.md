@@ -39,7 +39,8 @@ node scripts/dead.mjs         # referents that no longer exist
 ```
 
 All three accept `--root <dir>` and `--json`; `stale.mjs` also takes
-`--min-days N`.
+`--min-days N`, and `measure.mjs` takes `--bodies` to print the full text of
+every live entry through an escaping helper.
 
 ### measure — two numbers that diverge
 
@@ -434,18 +435,31 @@ throughout. Each guard, and what it does not cover:
   characters, never a character set** — Greek, German and emoji pass through
   untouched, for the same reason non-ASCII is legal in the word lists.
 - **Tab, newline and carriage return are layout in a body and forgery on a
-  report line**, so there are two sinks rather than one. A multi-line quote
-  keeps them; every single-line print — a filename, a heading, a config value, a
-  commit subject — escapes them, along with the bidi overrides (U+202A–U+202E,
-  U+2066–2069), which are format characters rather than control characters but
-  reorder a line just as effectively. Without that split a bare carriage return
-  is enough to forge a clean-looking finding, with no ESC involved at all. The
-  split is a convention held by whoever writes the next `console.log`: nothing
-  lints it, and a single-line report built with the body-sink helper compiles,
-  reviews and ships.
+  report line**, so there are two sinks rather than one. `measure.mjs --bodies`
+  keeps them, because an entry's line structure is its content; every
+  single-line print — a filename, a heading, a config value, a commit subject —
+  escapes them. All three sinks share ONE invisible-format list — the bidi
+  overrides, isolates and marks, the zero-width family, U+2028/U+2029, the
+  annotation characters and the U+E0000 tag block — which are format characters
+  rather than control characters but reorder, hide or smuggle text just as
+  effectively. Sharing the list is the point: three hand-maintained sets agreed
+  on bidi and nothing else, so a widening reached one sink and missed two. ZWNJ
+  and ZWJ are deliberately NOT in it, because Persian, Devanagari and every
+  emoji sequence need them. Without any of this a bare carriage return is
+  enough to forge a clean-looking finding, with no ESC involved at all. The
+  split was a convention held by whoever wrote the next `console.log` until the
+  suite started classifying every interpolation in every print sink; what that
+  check still cannot see is a value assembled in one function and printed in
+  another, and a print sink whose argument is a bare expression rather than a
+  template literal.
 - **`--json` escapes those bytes rather than stripping them** — its output is
   safe to `cat`, and a parser still decodes the escape back to the repo's
-  original codepoint, which is the fidelity the flag exists for. This was
+  original codepoint, which is the fidelity the flag exists for. That is the
+  difference between the two forms of `--bodies`: the text report strips what a
+  terminal would act on and frames every body line with `│ ` so its `===`
+  header cannot be forged from inside a body, and `--bodies --json` carries the
+  entry unmodified. An astral codepoint goes out of the JSON sink as a surrogate
+  pair, because `\u{XXXXX}` is valid JavaScript and is not valid JSON. This was
   documented as needing no handling at all, on the grounds that
   `JSON.stringify` escapes control bytes by itself. It escapes **C0 and nothing
   else**: measured, ESC and NUL come out escaped, but DEL emits a raw `0x7F`
