@@ -313,19 +313,19 @@ scoring table below is fenced for exactly that reason. (measured 2026-08-19)
 
 ## Triage
 
-- **The partition in `skills/next/SKILL.md` quotes numbers from this file, and
-  nothing keeps them true.** (writing the triage skill, 2026-08-19) The skill
-  opens with 46 live entries split 19 decided / 7 ready / 10 design-owed / 10
-  observed, because the ratio — seven of forty-six actually ready — is the entire
-  argument for why it triages instead of burning down. That table was counted by
-  hand on the day it was written and is already a snapshot: every entry this
-  repo files or retires moves it, and no check compares it against
-  `measure.mjs`'s live count. It degrades toward being wrong in the direction
-  that weakens the argument rather than overstates it, since decided entries
-  accumulate faster than ready ones get resolved. A shipped illustration that
-  says "measured on the repo this was written in" and carries its date is the
-  cheap version; recounting on every run is the expensive one and would put a
-  classifier in the loop, which the skill exists to argue against.
+- **Nothing checks that a quote in a shipped skill exists in the file it
+  quotes.** (bundle 11, 2026-08-22) The partition table quoted two strings as
+  evidence from this file that `git log -S` finds in no commit of it, and the
+  error survived a security review of that skill and the twelve pull requests
+  merged since it shipped, because a quotation reads as a citation and nothing
+  resolves it. A scan is cheap for the exact case — a double-quoted or backticked
+  run in a `skills/*.md` looked up in the targets — and worthless in general:
+  most quoted text in these files is paraphrase or deliberate illustration, so it
+  would fire on legitimate prose far more often than on a fabrication, and both
+  instances it would have caught were in one table. The shape that might work is
+  narrower than a scan and is a rule rather than code: quote nothing in a skill
+  that is not reproduced from a named file. Not designed, and filed here so the
+  next skill that cites this repo is written knowing the citation is unverified.
 
 - **Nothing separates a decided entry from one whose revisit condition has
   since fired.** (writing the triage skill, 2026-08-19) Several entries here
@@ -655,7 +655,7 @@ Everything older than these moved to `TODOS-DONE.md` when this file crossed the
 entries still impose were lifted into `CLAUDE.md` on the way out.
 
 This section was cut to the five most recent at that split and has grown back
-to sixteen since, so it is **not** "the five most recent" any more and the line
+to seventeen since, so it is **not** "the five most recent" any more and the line
 saying it was has been removed rather than left to read as current. Count it,
 do not increment it: this line said eleven while the file held twelve, because
 each sweep added one to the number it found written down instead of running
@@ -663,6 +663,48 @@ each sweep added one to the number it found written down instead of running
 cut is blocked on a different fact: `## Completed` has no entries for the work
 merged as PRs #6 and #7, and archiving a stale section keeps five older entries
 while archiving the recent ones. Write those two first, then split.
+
+- **The triage partition was recounted; the counts held and two of its quotes
+  did not.** `skills/next/SKILL.md` opened with 46 live entries split 19 decided
+  / 7 ready / 10 design-owed / 10 observed — dated, caveated, and never once
+  checked. The denominator survives the check: `measure.mjs` reads 46 live
+  entries at `7352414`, the later of the two commits dated 2026-08-20, which is
+  exactly what the table claimed. Its supporting quotes do not. The decided row
+  named three bolded prohibitions where only two have ever existed — `git log -S`
+  across every commit that touched this file finds `**Do not turn it into an
+  error**` and `**Do not file a heuristic for it**` and nothing else, and
+  `**Do not "fix" this by following the link**` appears nowhere in this repo
+  outside the table quoting it. Same for "widening the file list is trivial" in
+  the ready row: one hit in all of history, in `skills/next/SKILL.md` itself.
+  Two quotes with no source, in the paragraph whose entire job is to be evidence.
+
+  The recount also falsified the drift claim the table carried. At 54 live
+  entries on 2026-08-22 the partition is 26 decided / 9 ready / 6 design-owed /
+  13 observed. Decided did accumulate fastest — 19 to 26, 41.3% of live entries
+  to 48.1% — which is the half the caveat got right. The ready fraction rose
+  rather than fell: 7 to 9, 15.2% to 16.7%, across a window that retired eleven
+  entries to this section. The mechanism is that eight of today's nine ready
+  entries are dated 2026-08-21 or later — the bundles that resolved ready items
+  filed new ones as they went — and only one of the nine predates the window at
+  all. The skill now prints both dated columns and says the ready bucket turns
+  over rather than drains.
+
+  What a second count cannot do is say which entries moved, and that is now a
+  stated non-goal beside the columns. Counted on `main` as this was written, 30
+  of the 46 leads are still live verbatim; the other 16 are gone from the file
+  entirely, none of them surviving into this section, because a completion is
+  written with a lead describing the fix and not the deferral it closes. So lead text separates present from absent and nothing
+  more — a resolved entry and one rewritten narrower are indistinguishable by it,
+  and at least two of the 16 were rewrites rather than resolutions: `4d654f1`
+  deleted "Nothing enforces `safeField` at a print sink" and "`writeStdout` is a
+  convention at two sinks" in the same commit that added the two narrower entries
+  standing in their place. Every one of those figures is endpoint-sensitive, and
+  the skill now says so beside them, because the commit carrying them moves them:
+  this entry out and the quote-checking entry in takes the same 54 live entries
+  from 30 surviving and 16 gone to 29 and 17, and from 26 / 9 / 6 / 13 across the
+  rows to 26 / 8 / 7 / 13. The security round read the second endpoint and scored
+  the first as an off-by-one, which is the cheapest possible demonstration that a
+  count without its endpoint is not a measurement. (bundle 11, 2026-08-22)
 
 - **Both unmeasured thresholds were measured, and both stand.** The 256MB read
   budget in `dead.mjs` and the 20-non-blank-line floor under `warnIfHeadingless`
