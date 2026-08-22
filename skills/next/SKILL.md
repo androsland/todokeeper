@@ -120,17 +120,26 @@ helpers never covered — you read the file directly and re-emitted it into chat
 and, later, into a PR body, and a bidi override inside a DECIDED entry can make
 the quoted evidence read as the opposite of what it says, which converts this
 step's expensive direction into the easy one. `--bodies` exists so that no longer
-has to be done by eye: it strips controls and escapes bidi to `\uXXXX` while
-leaving line structure alone, so a body still reads as prose. When the exact
-bytes matter, `--bodies --json` carries the entry unmodified and escapes at the
-serialiser instead.
+has to be done by eye: it strips control characters and escapes the
+invisible-format ones to `\uXXXX` — the bidi overrides, isolates and marks, the
+zero-width family, U+2028/U+2029, the annotation characters and the U+E0000
+tag block — while leaving line structure alone, so a body still reads as prose.
+It deliberately leaves ZWNJ and ZWJ alone, because Persian, Devanagari and every
+emoji sequence need them. When the exact bytes matter, `--bodies --json` carries
+the entry unmodified and escapes at the serialiser instead.
 
-Three limits, because the flag is not a boundary. Its `===` header line is a
-reading aid: an entry containing a line that looks like one is quoted as
-written, and `--json` is the form to use when the structure has to hold. Long
-entries are truncated at a cap and marked `[TRUNCATED]`, on stderr and in the
-report both — never quote one of those as the entry. And completed sections are
-excluded by design, so `--bodies` cannot answer a question about the archive.
+Its `===` header line is anchored at column 0 and every body line is prefixed
+with `│ `, so an entry containing a header-shaped line cannot forge one. The
+prefix is a quoting frame, not part of the entry; strip it when you quote.
+
+Three limits, because the flag is still not the file. The frame and the escaping
+mean the text form is not byte-identical — `--json` is the form to use when the
+bytes or the structure have to hold. Long entries are truncated at a cap and
+marked `[TRUNCATED]`, and past 5,000 live entries the rest are not listed at
+all; both are announced on stderr and in the report — never quote a truncated
+body as the entry, and never read the listing as the whole set when it says
+entries went unlisted. And completed sections are excluded by design, so
+`--bodies` cannot answer a question about the archive.
 
 ### Never classify by prose shape, and never automate this step
 

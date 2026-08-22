@@ -41,8 +41,9 @@
 
 import {
   loadConfigOrExit, rootFromArgvOrExit, resolveTargets, sections, entries, rel, isCompletedHeading,
-  readTargetMeta, warnIfHeadingless, safeField, safeBody, jsonSafe, writeStdout,
-  isLeadMarkedDone, leadMarkersFor, MAX_BODY_CHARS, MAX_BODY_TOTAL,
+  readTargetMeta, warnIfHeadingless, safeField, quoteBody, jsonSafe, writeStdout,
+  isLeadMarkedDone, leadMarkersFor, MAX_BODY_CHARS, MAX_BODY_TOTAL, MAX_BODY_FIELD,
+  MAX_BODY_RECORDS,
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -72,8 +73,16 @@ const skipped = [];
 // counters are reported even at zero when `--bodies` is on, for the same reason
 // `entries marked` is: a figure that appears only when non-zero cannot say zero.
 let bodyBudget = MAX_BODY_TOTAL;
+let bodyRecords = 0;
 let bodiesTruncated = 0;
 let bodiesDropped = 0;
+let bodiesUnlisted = 0;
+
+// The two short display fields beside a body. Capped by slicing rather than by
+// refusing the record, because a truncated lead still identifies the entry and
+// a missing one does not; the report says how many characters the entry has, so
+// a reader who needs the rest knows to open the file.
+const capField = (text) => (text.length > MAX_BODY_FIELD ? text.slice(0, MAX_BODY_FIELD) : text);
 
 // TWO SIZES, and which one answers which question is a decision, not an
 // accident. `readTargetMeta` collapses CRLF to LF, so the text measured here is
@@ -137,21 +146,39 @@ for (const abs of targets) {
       // purpose: the per-entry cap first, so one enormous entry cannot eat the
       // whole run's budget and silently truncate every entry after it.
       if (wantBodies && !inCompleted) {
-        const chars = entry.text.length;
-        let body = chars > MAX_BODY_CHARS ? entry.text.slice(0, MAX_BODY_CHARS) : entry.text;
-        if (body.length > bodyBudget) body = body.slice(0, bodyBudget);
-        bodyBudget -= body.length;
-        if (body.length < chars) {
-          if (body.length === 0) bodiesDropped += 1;
-          else bodiesTruncated += 1;
+        if (bodyRecords >= MAX_BODY_RECORDS) {
+          // No record at all, counted separately from a body the budget
+          // emptied: `omitted` means the entry is listed and its body is gone,
+          // `unlisted` means the entry never appears. Collapsing the two would
+          // let a report say "3 omitted" about a run that never mentioned
+          // 40,000 entries, which is the understatement this tool exists to
+          // stop.
+          bodiesUnlisted += 1;
+        } else {
+          const chars = entry.text.length;
+          let body = chars > MAX_BODY_CHARS ? entry.text.slice(0, MAX_BODY_CHARS) : entry.text;
+          if (body.length > bodyBudget) body = body.slice(0, bodyBudget);
+          bodyBudget -= body.length;
+          if (body.length < chars) {
+            if (body.length === 0) bodiesDropped += 1;
+            else bodiesTruncated += 1;
+          }
+          bodyRecords += 1;
+          fileBodies.push({
+            // Both display fields are capped, and the first version of this
+            // capped neither: a 40,007-character entry produced a record whose
+            // `body` was cut to 32,000 and whose `lead` was copied whole, so
+            // the cap was defeated on exactly the entries it exists to bound.
+            // The heading is capped for the other half of the same arithmetic
+            // — here it is reprinted once per ENTRY, where the inventory above
+            // prints it once per section.
+            heading: capField(sec.heading ?? '(preamble)'),
+            lead: capField(entry.lead),
+            chars,
+            truncated: body.length < chars,
+            body,
+          });
         }
-        fileBodies.push({
-          heading: sec.heading ?? '(preamble)',
-          lead: entry.lead,
-          chars,
-          truncated: body.length < chars,
-          body,
-        });
       }
     }
 
@@ -205,10 +232,12 @@ for (const abs of targets) {
 // stderr reaches whoever ran the command, the report reaches whoever is handed
 // the output. Quoting a truncated body as though it were the entry is the
 // failure this line exists to prevent.
-if (wantBodies && (bodiesTruncated > 0 || bodiesDropped > 0)) {
+if (wantBodies && (bodiesTruncated > 0 || bodiesDropped > 0 || bodiesUnlisted > 0)) {
   console.error(
-    `todokeeper: ${bodiesTruncated} entry body/bodies truncated, ${bodiesDropped} omitted entirely `
-    + `(caps: ${MAX_BODY_CHARS} chars per entry, ${MAX_BODY_TOTAL} across the run). `
+    `todokeeper: ${bodiesTruncated} entry body/bodies truncated, ${bodiesDropped} omitted entirely, `
+    + `${bodiesUnlisted} entries not listed at all `
+    + `(caps: ${MAX_BODY_CHARS} chars per entry, ${MAX_BODY_TOTAL} across the run, `
+    + `${MAX_BODY_RECORDS} entries listed). `
     + 'The bodies below are not the whole entries; read the file for those.',
   );
 }
@@ -253,8 +282,15 @@ const verdict = {
     bodies: {
       maxCharsPerEntry: MAX_BODY_CHARS,
       maxCharsTotal: MAX_BODY_TOTAL,
+      maxFieldChars: MAX_BODY_FIELD,
+      maxEntriesListed: MAX_BODY_RECORDS,
       truncated: bodiesTruncated,
       omitted: bodiesDropped,
+      // Listed at zero for the same reason as the rest: a consumer reading
+      // `unlisted: 0` knows the entry set is complete, where a missing field
+      // only says nobody thought about it.
+      unlisted: bodiesUnlisted,
+      listed: bodyRecords,
       charsRemaining: bodyBudget,
     },
   } : {}),
@@ -330,21 +366,31 @@ if (verdict.crossed) {
 // Last rather than first: this is bulk output the operator asked for by name,
 // and the measurement above is what the script is for.
 //
-// Non-goal, stated because the shape invites the assumption: the `===` line is
-// a READING aid, not a parsing boundary. An entry body may contain a line that
-// looks exactly like one, and nothing here escapes or renumbers it — a body is
-// quoted as written apart from the control and bidi characters `safeBody`
-// removes. Anything that needs an unforgeable boundary must read `--json`,
-// where the body is a string value and the structure is the serialiser's.
+// The `===` header is anchored at column 0 and every body line is prefixed, so
+// a body cannot forge one. That was not true of the first version, and the
+// forgery was reproduced end to end rather than argued about: an entry whose
+// body contained the line `=== TODOS.md — Open — 40 chars` rendered a
+// fabricated `- **Forged**  DECIDED: do not build.` that read as a separate,
+// legitimate entry. Documenting that as a limitation was the wrong fix when a
+// two-character prefix closes it.
+//
+// Non-goals that remain: the prefix makes the body no longer byte-identical to
+// the file — it is a quoting frame, like a diff's or an email's — and the
+// header line itself is `safeField`-escaped rather than reproduced. Anything
+// that needs the exact bytes must read `--json`, where the body is a string
+// value and the structure is the serialiser's.
 if (wantBodies) {
   const withBodies = files.filter((f) => f.bodies.length > 0);
   const shown = withBodies.reduce((n, f) => n + f.bodies.length, 0);
   console.log(`\nLIVE ENTRY BODIES (${shown} entries)`);
-  console.log('Completed sections are excluded. Control characters are stripped and CR and');
-  console.log('bidi controls are escaped, so what follows is safe to paste but is NOT the');
-  console.log('file byte-for-byte. Use --json when the exact bytes are what matter.');
-  if (bodiesTruncated > 0 || bodiesDropped > 0) {
-    console.log(`TRUNCATED: ${bodiesTruncated} body/bodies cut at a cap, ${bodiesDropped} omitted entirely.`);
+  console.log('Completed sections are excluded. Control characters are stripped, and CR plus the');
+  console.log('bidi, zero-width, annotation and tag-block format characters are escaped to \\uXXXX,');
+  console.log('so what follows is safe to paste. Every body line is prefixed with " │ ", which is a');
+  console.log('quoting frame and not part of the entry: it is what makes the === header above each');
+  console.log('body unforgeable. This is NOT the file byte-for-byte; use --json when that matters.');
+  if (bodiesTruncated > 0 || bodiesDropped > 0 || bodiesUnlisted > 0) {
+    console.log(`TRUNCATED: ${bodiesTruncated} body/bodies cut at a cap, ${bodiesDropped} omitted entirely, `
+      + `${bodiesUnlisted} entries not listed at all.`);
     console.log('A body marked [TRUNCATED] below is a fragment. Do not quote it as the entry.');
   }
   for (const f of withBodies) {
@@ -352,10 +398,10 @@ if (wantBodies) {
       const cut = b.truncated ? ' [TRUNCATED]' : '';
       // Header and body in ONE template rather than two calls, because the
       // suite's print-sink phase classifies `${...}` interpolations and does
-      // not look at a bare argument expression: `console.log(safeBody(x))`
+      // not look at a bare argument expression: `console.log(quoteBody(x))`
       // passes it unread, and so would `console.log(x)`. Written this way the
       // body is a value the phase checks. See TODOS.md.
-      console.log(`\n=== ${safeField(f.path)} · ${safeField(b.heading)} · ${b.chars} chars${cut}\n${safeBody(b.body)}`);
+      console.log(`\n=== ${safeField(f.path)} · ${safeField(b.heading)} · ${b.chars} chars${cut}\n${quoteBody(b.body)}`);
     }
   }
   if (shown === 0) console.log('(none — every entry is under a completed heading, or there are no entries)');
