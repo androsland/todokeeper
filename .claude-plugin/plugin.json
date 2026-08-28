@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "todokeeper",
   "displayName": "Todokeeper",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Keeps a repo's deferred-work file honest. Measures it instead of eyeballing it, finds entries whose referents have moved on without them, finds referents that no longer exist, and splits or archives only when a measured threshold is actually crossed. Adapts to the structure a repo already uses — by domain, by priority, by kind — rather than imposing a taxonomy. Reports evidence; a human rules.",
   "author": {
     "name": "androsland",

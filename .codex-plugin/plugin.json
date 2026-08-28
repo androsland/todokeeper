@@ -1,0 +1,39 @@
+{
+  "name": "todokeeper",
+  "version": "0.2.0",
+  "description": "Audit deferred-work files against the codebase before splitting, archiving, or choosing the next item.",
+  "author": {
+    "name": "androsland",
+    "email": "4264136+androsland@users.noreply.github.com",
+    "url": "https://github.com/androsland"
+  },
+  "homepage": "https://github.com/androsland/todokeeper",
+  "repository": "https://github.com/androsland/todokeeper",
+  "license": "MIT",
+  "keywords": [
+    "todos",
+    "deferred-work",
+    "technical-debt",
+    "backlog",
+    "repo-maintenance"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Todokeeper",
+    "shortDescription": "Audit deferred work against the codebase.",
+    "longDescription": "Measure deferred-work files, surface stale entries and dead referents, separate finished work from live work, and choose one evidence-backed next item without treating the backlog as a burn-down list.",
+    "developerName": "androsland",
+    "category": "Productivity",
+    "capabilities": [
+      "Analysis",
+      "Local scripts"
+    ],
+    "websiteURL": "https://github.com/androsland/todokeeper",
+    "defaultPrompt": [
+      "Audit this repo's deferred-work file.",
+      "What should I work on next from TODOS.md?",
+      "Check whether this TODO file is stale or too large."
+    ],
+    "brandColor": "#4F675B"
+  }
+}

@@ -3,7 +3,7 @@
   "name": "todokeeper",
   "metadata": {
     "description": "Keeps a repo's deferred-work file honest: measures it, finds entries whose referents moved on without them, finds referents that no longer exist, and splits or archives only when a measured threshold is crossed. Adapts to the structure the repo already uses; reports evidence rather than ruling.",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "owner": {
     "name": "androsland",

@@ -17,12 +17,17 @@ Three scripts measure the invisible three. **They report evidence and refuse to
 rule** — every verdict in this skill is yours to make by reading, and the most
 common way to misuse this tool is to treat a bucket label as a decision.
 
+Codex exposes this plugin's installed directory as `PLUGIN_ROOT`; Claude Code
+exposes it as `CLAUDE_PLUGIN_ROOT`. The commands below support both. If both are
+empty, stop and report that the plugin root is unavailable instead of guessing
+a path.
+
 ## Run the measurement first, always
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/measure.mjs"     # size, completed mass, section inventory
-node "${CLAUDE_PLUGIN_ROOT}/scripts/stale.mjs"       # entries the repo moved on without
-node "${CLAUDE_PLUGIN_ROOT}/scripts/dead.mjs"        # referents that no longer exist
+node "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}/scripts/measure.mjs"     # size, completed mass, section inventory
+node "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}/scripts/stale.mjs"       # entries the repo moved on without
+node "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}/scripts/dead.mjs"        # referents that no longer exist
 ```
 
 All three take `--root <dir>` and `--json`. `stale.mjs` takes `--min-days N` to

@@ -1,6 +1,6 @@
 # todokeeper
 
-A Claude Code plugin that keeps a repo's deferred-work file honest.
+A Claude Code and Codex plugin that keeps a repo's deferred-work file honest.
 
 `TODOS.md` fails in four ways, and only one of them is visible by looking at it:
 
@@ -17,12 +17,23 @@ have stopped agreeing with the repo, so you can go and read those.
 
 ## Install
 
-```
-/plugin marketplace add androsland/todokeeper
-/plugin install todokeeper
+### Claude Code
+
+```bash
+claude plugin marketplace add androsland/todokeeper
+claude plugin install todokeeper@todokeeper
 ```
 
-Two skills load from it. Ask Claude to audit, split, or sweep the TODO file and
+### Codex
+
+```bash
+codex plugin marketplace add androsland/todokeeper
+codex plugin add todokeeper@todokeeper
+```
+
+Start a new Claude Code or Codex conversation after installation so the skills
+are discovered. Two skills load from the plugin. Ask either agent to audit,
+split, or sweep the TODO file and
 `todokeeper` loads. Ask what to work on next — or to "fix everything in
 TODOS.md" — and `next` loads instead: it partitions the entries by whether they
 are actually pending, shows the evidence for each call, and takes one ruled item
