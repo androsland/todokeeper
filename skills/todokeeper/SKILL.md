@@ -17,17 +17,42 @@ Three scripts measure the invisible three. **They report evidence and refuse to
 rule** — every verdict in this skill is yours to make by reading, and the most
 common way to misuse this tool is to treat a bucket label as a decision.
 
-Codex exposes this plugin's installed directory as `PLUGIN_ROOT`; Claude Code
-exposes it as `CLAUDE_PLUGIN_ROOT`. The commands below support both. If both are
-empty, stop and report that the plugin root is unavailable instead of guessing
-a path.
+## Resolve the bundled scripts
+
+This skill is shared by Codex and Claude Code. Resolve `<todokeeper-root>` once
+before running any bundled command:
+
+- Prefer a non-empty `PLUGIN_ROOT`, then a non-empty `CLAUDE_PLUGIN_ROOT`.
+- If neither is available, derive the root from the exact absolute path of this
+  loaded `SKILL.md` supplied by the skills catalog/runtime context. This file is
+  `<todokeeper-root>/skills/todokeeper/SKILL.md`, so remove the exact suffix
+  `/skills/todokeeper/SKILL.md` and canonicalize the result. This is
+  deterministic derivation from the selected skill, not a filesystem search or
+  a guess about an installation/cache layout.
+
+Canonicalize the selected directory to a stable absolute path, then verify it
+before use. It must contain either `.codex-plugin/plugin.json` or
+`.claude-plugin/plugin.json`, and all three files `scripts/measure.mjs`,
+`scripts/stale.mjs`, and `scripts/dead.mjs`. If the loaded-file path is missing,
+not absolute, or does not end in the exact suffix above, stop with:
+`todokeeper: cannot resolve plugin root from loaded SKILL.md path "<path>"; expected an absolute path ending /skills/todokeeper/SKILL.md.` If
+canonicalization fails, stop with:
+`todokeeper: cannot canonicalize plugin root candidate "<candidate>": <error>.`
+If verification fails, stop with:
+`todokeeper: invalid plugin root "<resolved-path>": missing <failed-check>.`
+Report every failed check; do not search for another copy.
+
+Use the resolved absolute path literally wherever `<todokeeper-root>` appears
+below, and keep it quoted. Do not assume a shell variable or export persists
+across tool calls. Codex guarantees `PLUGIN_ROOT` to plugin hook processes, not
+to ordinary skill shell commands.
 
 ## Run the measurement first, always
 
 ```bash
-node "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}/scripts/measure.mjs"     # size, completed mass, section inventory
-node "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}/scripts/stale.mjs"       # entries the repo moved on without
-node "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}/scripts/dead.mjs"        # referents that no longer exist
+node "<todokeeper-root>/scripts/measure.mjs"     # size, completed mass, section inventory
+node "<todokeeper-root>/scripts/stale.mjs"       # entries the repo moved on without
+node "<todokeeper-root>/scripts/dead.mjs"        # referents that no longer exist
 ```
 
 All three take `--root <dir>` and `--json`. `stale.mjs` takes `--min-days N` to

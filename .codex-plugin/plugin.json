@@ -1,6 +1,6 @@
 {
   "name": "todokeeper",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Audit deferred-work files against the codebase before splitting, archiving, or choosing the next item.",
   "author": {
     "name": "androsland",

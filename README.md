@@ -39,6 +39,12 @@ TODOS.md" — and `next` loads instead: it partitions the entries by whether the
 are actually pending, shows the evidence for each call, and takes one ruled item
 to a PR. It is deliberately not a burn-down; the reasoning is in the skill.
 
+Both skills resolve their bundled scripts from the plugin root variables when
+the host supplies them. Ordinary Codex skill commands do not receive the
+hook-only `PLUGIN_ROOT` guarantee, so they deterministically fall back to the
+absolute path of the loaded `SKILL.md`, verify the plugin manifest and scripts,
+and work independently of the conversation's current directory.
+
 ## The three scripts
 
 They run standalone too — plain Node, no dependencies, nothing to build.
