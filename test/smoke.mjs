@@ -322,6 +322,89 @@ function testScripts(root) {
   }
 }
 
+// --------------------------- 3b. published skills resolve their bundled root
+
+/**
+ * The skills run ordinary shell commands, not plugin hooks. Codex only
+ * guarantees its plugin-root variables to hook processes, so both published
+ * skills need a second, deterministic route from their own loaded file.
+ *
+ * This is an instruction contract rather than an implementation unit test:
+ * the Markdown is what the runtime loads and the agent follows. Keep the
+ * assertions on the required semantics and command shape, without naming an
+ * installed cache directory that differs between hosts.
+ */
+function testPublishedSkillRootContract(root) {
+  const sourceRoot = realpathSync(join(SCRIPTS, '..'));
+  const bundledScripts = ['measure.mjs', 'stale.mjs', 'dead.mjs'];
+  const cleanEnv = { ...process.env };
+  delete cleanEnv.PLUGIN_ROOT;
+  delete cleanEnv.CLAUDE_PLUGIN_ROOT;
+
+  for (const script of bundledScripts) {
+    const scriptPath = join(sourceRoot, 'scripts', script);
+    check(`${script} exists relative to the derived source root`,
+      lstatSync(scriptPath).isFile(), scriptPath);
+  }
+
+  check('the derived source root contains a plugin manifest',
+    ['.codex-plugin/plugin.json', '.claude-plugin/plugin.json']
+      .some((path) => {
+        try { return lstatSync(join(sourceRoot, path)).isFile(); } catch { return false; }
+      }));
+
+  for (const skill of ['next', 'todokeeper']) {
+    const skillPath = realpathSync(join(sourceRoot, 'skills', skill, 'SKILL.md'));
+    const suffix = `/skills/${skill}/SKILL.md`;
+    const body = readFileSync(skillPath, 'utf8');
+    const derived = skillPath.endsWith(suffix) ? skillPath.slice(0, -suffix.length) : null;
+
+    check(`${skill} derives from its exact loaded SKILL.md suffix`,
+      derived !== null && realpathSync(derived) === sourceRoot,
+      `loaded path ${skillPath}`);
+    check(`${skill} prefers PLUGIN_ROOT before CLAUDE_PLUGIN_ROOT`,
+      body.includes('Prefer a non-empty `PLUGIN_ROOT`, then a non-empty `CLAUDE_PLUGIN_ROOT`'));
+    check(`${skill} documents the loaded-file-path fallback`,
+      body.includes('exact absolute path of this')
+      && body.includes('loaded `SKILL.md` supplied by the skills catalog/runtime context')
+      && body.includes(suffix));
+    check(`${skill} verifies both manifest forms and every bundled script`,
+      body.includes('.codex-plugin/plugin.json')
+      && body.includes('.claude-plugin/plugin.json')
+      && bundledScripts.every((script) => body.includes(`scripts/${script}`)));
+    check(`${skill} names the ordinary-command limit of the hook environment`,
+      body.includes('plugin hook processes') && body.includes('ordinary skill shell commands'));
+    check(`${skill} forbids a filesystem/cache-layout guess`,
+      body.includes('not a filesystem search') && body.includes('installation/cache layout'));
+
+    const commandLines = body.split('\n').filter((line) => (
+      /\bnode\s+/.test(line) && /scripts\/(measure|stale|dead)\.mjs/.test(line)
+    ));
+    check(`${skill} publishes bundled-script command examples`,
+      commandLines.length >= 3, `${commandLines.length} command line(s)`);
+    check(`${skill} commands use the quoted resolved root`,
+      commandLines.every((line) => line.includes('"<todokeeper-root>/scripts/')),
+      commandLines.join('\n'));
+    check(`${skill} commands do not directly depend on plugin-root variables`,
+      commandLines.every((line) => !line.includes('PLUGIN_ROOT')),
+      commandLines.join('\n'));
+  }
+
+  const unrelated = mkdtempSync(join(tmpdir(), 'todokeeper-unrelated-cwd-'));
+  try {
+    for (const script of bundledScripts) {
+      const proc = spawnSync(process.execPath,
+        [join(sourceRoot, 'scripts', script), '--root', root, '--json'],
+        { cwd: unrelated, env: cleanEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      check(`${script} runs outside the plugin and repo directories with root variables unset`,
+        proc.status === 0 && proc.stdout.trim().length > 0,
+        `exit ${proc.status}: ${String(proc.stderr || proc.error || '').split('\n')[0]}`);
+    }
+  } finally {
+    rmSync(unrelated, { recursive: true, force: true });
+  }
+}
+
 // --------------------------------------- 4. the reports carry the provenance
 
 function testReportsSurfaceSuppression(root) {
@@ -2974,6 +3057,7 @@ function testEntryBodies() {
     ['classifier', testClassifier],
     ['provenance', testProvenance],
     ['scripts', testScripts],
+    ['published-skill-root', testPublishedSkillRootContract],
     ['reports', testReportsSurfaceSuppression],
     ['call-form', testCallFormVerdicts],
     ['crlf', testCrlfParsesIdentically],
